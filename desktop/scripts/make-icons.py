@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 プレースホルダアイコン生成スクリプト (標準ライブラリのみ / Pillow 不要)
 
@@ -78,15 +77,13 @@ def _keyhole_inside(x: float, y: float) -> bool:
     if (x / 0.17) ** 2 + ((y + 0.06) / 0.17) ** 2 <= 1.0:
         return True
     # 軸の部分
-    if abs(x) <= 0.075 and 0.08 <= y <= 0.40:
-        return True
-    return False
+    return bool(abs(x) <= 0.075 and 0.08 <= y <= 0.40)
 
 
 def _shade(color_a, color_b, t: float):
     """2 色を t (0..1) で線形補間。"""
     t = max(0.0, min(1.0, t))
-    return tuple(int(round(a + (b - a) * t)) for a, b in zip(color_a, color_b))
+    return tuple(round(a + (b - a) * t) for a, b in zip(color_a, color_b, strict=True))
 
 
 # ---------------------------------------------------------------------------

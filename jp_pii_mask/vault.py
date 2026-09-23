@@ -17,20 +17,21 @@
 
 from __future__ import annotations
 
-import base64
+import contextlib
 import json
+import logging
 import os
 import re
 import stat
 import threading
 import time
-import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
-__all__ = ["Vault", "VaultEntry", "PLACEHOLDER_RE"]
+__all__ = ["PLACEHOLDER_RE", "Vault", "VaultEntry"]
+
+log = logging.getLogger("jp_pii_mask.vault")
 
 # プレースホルダの標準形式: [氏名_1]
 #   - 角括弧は LLM がそのまま保持しやすい
@@ -67,7 +68,7 @@ class VaultEntry:
         }
 
     @staticmethod
-    def from_dict(d: dict) -> "VaultEntry":
+    def from_dict(d: dict) -> VaultEntry:
         return VaultEntry(
             placeholder=d["placeholder"],
             original=d["original"],
@@ -140,10 +141,8 @@ class Vault:
             return kp.read_bytes()
         key = os.urandom(32)
         kp.write_bytes(key)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(kp, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
         return key
 
     # -- 暗号化 -----------------------------------------------------------
@@ -242,10 +241,8 @@ class Vault:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(blob)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
         tmp.replace(path)
 
     def load(self) -> bool:
@@ -273,7 +270,7 @@ class Vault:
     # -- 内部 -------------------------------------------------------------
     def _evict_if_needed(self) -> None:
         while len(self._forward) > self.max_entries:
-            key, entry = self._forward.popitem(last=False)
+            _key, entry = self._forward.popitem(last=False)
             self._reverse.pop(entry.placeholder, None)
 
     @staticmethod
@@ -325,20 +322,22 @@ class SessionVaults:
                 if store is not None and store.exists():
                     try:
                         vault.load()
-                    except Exception:
-                        # 壊れた Vault は無視して作り直す (起動を止めない)
-                        pass
+                    except Exception as exc:
+                        # 壊れた Vault は無視して作り直す (起動を止めない)。
+                        # ただし黙殺せず警告する: 復号鍵の不一致は
+                        # 「復元できない」という重大な症状につながるため。
+                        log.warning("Vault の読み込みに失敗したため新規作成します: %s", exc)
                 self._vaults[sid] = vault
             self._touched[sid] = time.time()
             return vault
 
     def save_all(self) -> None:
         with self._lock:
-            for v in self._vaults.values():
+            for sid, v in self._vaults.items():
                 try:
                     v.save()
-                except Exception:
-                    continue
+                except Exception as exc:
+                    log.warning("Vault の保存に失敗しました (session=%s): %s", sid, exc)
 
     def drop(self, session_id: str) -> None:
         with self._lock:
@@ -355,6 +354,6 @@ class SessionVaults:
             if vault is not None and self.persist:
                 try:
                     vault.save()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("期限切れ Vault の保存に失敗しました (session=%s): %s", sid, exc)
             self._touched.pop(sid, None)

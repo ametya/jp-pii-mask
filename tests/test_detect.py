@@ -7,7 +7,6 @@
 import pytest
 
 from jp_pii_mask.detect import Detector
-from jp_pii_mask.validators import is_luhn
 
 
 @pytest.fixture(scope="module")
@@ -247,9 +246,11 @@ class TestOverlapResolution:
 
 class TestCustomTerms:
     def test_custom_term_via_proxy_helper(self):
-        from jp_pii_mask.config import Config, ConfigStore
+        import os
+        import tempfile
+
+        from jp_pii_mask.config import ConfigStore
         from jp_pii_mask.proxy import MaskingProxy
-        import tempfile, os
 
         with tempfile.TemporaryDirectory() as d:
             store = ConfigStore(os.path.join(d, "config.json"))

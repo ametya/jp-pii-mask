@@ -366,7 +366,7 @@ class TestStreaming:
                 continue
             for ch in obj.get("choices", []):
                 delta = ch.get("delta") or {}
-                if "content" in delta and delta["content"]:
+                if delta.get("content"):
                     out.append(delta["content"])
         return "".join(out)
 

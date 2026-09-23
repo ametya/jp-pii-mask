@@ -94,6 +94,37 @@ python scripts/e2e_live.py --exe desktop/binaries/jp-pii-mask-server.exe
 - `tauri.conf.json` の Tauri 2 スキーマ適合
 - アイコンの見た目、macOS Gatekeeper / Windows SmartScreen
 
+### ⚠️ サイドカー停止は「プロセスツリーごと」必要（実測で判明）
+
+**PyInstaller の `--onefile` 実行ファイルは、ブートローダ（親）が
+実際のアプリ（子）を spawn します。**
+
+したがって `CommandChild::kill()` が親だけを終わらせた場合、
+**子プロセスが孤児として残り、ポート 8787 を掴んだまま**になります。
+
+これは実際に発生しました。検証スクリプトが `terminate()` で親だけを
+止めたところ、`jp-pii-mask-server` が生存し続け、次のビルドが
+`PermissionError`（exe がロックされている）で失敗しました。
+
+**Rust 側（`main.rs` の `SidecarState::kill_child`）で必要な対応:**
+
+1. **まず正常シャットダウンを要求する** — 子には `SIGTERM` 相当を送る。
+   `CommandChild::kill()` は即時終了（Windows では TerminateProcess）なので、
+   uvicorn がグレースフルに停止する余地がありません。
+2. **ツリーごと確実に終わらせる** — 親だけを kill しても子が残ります。
+   Windows なら `taskkill /PID <pid> /T /F` 相当（`/T` = ツリー）、
+   Unix ならプロセスグループへのシグナル送信が必要です。
+3. **ポート解放を確認する** — 停止後に 8787 が bind 可能か確かめる。
+   掴んだままだと次回起動が失敗します。
+
+検証スクリプト側は `terminate_tree()` で対応済みです
+（Windows は `taskkill /T /F`、停止後にポート解放まで確認）。
+この対応により `python scripts/e2e_live.py --exe …` は
+**22/22 PASS** となり、実行後に孤児プロセスが残らないことを確認しました。
+
+> この不具合は in-process のテストでは絶対に再現しません。
+> 「実際にプロセスを起動して、終了後に確認する」ことで初めて見つかりました。
+
 ---
 
 ## 1. 未検証項目（この環境では検証不能）

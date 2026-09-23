@@ -20,27 +20,28 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
-from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 
 from . import validators as V
 from .words import (
-    ADDRESS_CONTINUE_WORDS,
     ADDRESS_TERMINATORS,
     CONTEXT_KEYWORDS,
     HONORIFICS,
     ORG_FALSE_POSITIVES,
     ORG_LEGAL_FORMS,
     ORG_PREFIX_FORMS,
-    ORG_SUFFIX_FORMS,
     PREFECTURES,
     SURNAME_FALSE_POSITIVES,
     SURNAMES,
 )
 
-__all__ = ["Entity", "Detector", "ENTITY_TYPES", "TYPE_LABELS"]
+__all__ = ["ENTITY_TYPES", "TYPE_LABELS", "Detector", "Entity"]
+
+log = logging.getLogger("jp_pii_mask.detect")
 
 # ---------------------------------------------------------------------------
 # エンティティ種別
@@ -108,7 +109,7 @@ class Entity:
     def length(self) -> int:
         return self.end - self.start
 
-    def overlaps(self, other: "Entity") -> bool:
+    def overlaps(self, other: Entity) -> bool:
         return self.start < other.end and other.start < self.end
 
     def as_dict(self) -> dict:
@@ -295,7 +296,8 @@ class Detector:
         for model in ("ja_ginza", "ja_core_news_lg", "ja_core_news_md", "ja_core_news_sm"):
             try:
                 return spacy.load(model)
-            except Exception:
+            except Exception as exc:
+                log.debug("NER モデル %s を読み込めませんでした: %s", model, exc)
                 continue
         return None
 
@@ -400,7 +402,10 @@ class Detector:
         for m in RE_IPV4.finditer(text):
             octets = m.group(1).split(".")
             if all(0 <= int(o) <= 255 for o in octets) and len(octets) == 4:
-                if m.group(1) in ("0.0.0.0", "127.0.0.1", "255.255.255.255"):
+                # ループバック等、マスク不要なアドレスの除外。
+                # ここでの "0.0.0.0" はバインド先ではなくアドレス文字列であり、
+                # S104 (all interfaces へのバインド) は誤検知。
+                if m.group(1) in ("0.0.0.0", "127.0.0.1", "255.255.255.255"):  # noqa: S104
                     continue
                 yield Entity("IP_ADDRESS", m.start(), m.end(), m.group(1), 0.75, "regex")
 
@@ -623,7 +628,9 @@ class Detector:
         assert self._nlp is not None
         try:
             doc = self._nlp(text)
-        except Exception:
+        except Exception as exc:
+            # NER の失敗は「取りこぼし」を意味する。黙殺せず記録する。
+            log.warning("NER の推論に失敗しました (このテキストは NER なしで処理します): %s", exc)
             return
         mapping = {
             "Person": "PERSON",

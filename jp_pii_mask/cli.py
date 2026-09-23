@@ -12,10 +12,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 
-from .config import ConfigStore, UPSTREAM_PRESETS, config_dir
+from .config import UPSTREAM_PRESETS, ConfigStore
 from .detect import Detector
 from .masking import Masker
 from .vault import Vault
@@ -32,10 +33,10 @@ def _make_streams_robust() -> None:
     解決策: エンコードできない文字は例外ではなく置換文字にする。
     """
     for stream in (sys.stdout, sys.stderr):
-        try:
+        # reconfigure を持たないストリーム (ラッパー等) では何もしない。
+        # ここで例外を投げると本来の目的 (落ちないこと) に反する。
+        with contextlib.suppress(Exception):
             stream.reconfigure(errors="replace")  # type: ignore[union-attr]
-        except Exception:
-            pass
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -140,7 +141,10 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     print(restored.text)
     ok = restored.text == text
     print("\n" + "─" * 60)
-    print(f"往復一致: {'PASS' if ok else 'FAIL'}  (復元 {restored.restored} 件 / 未復元 {len(restored.missing)} 件)")
+    print(
+        f"往復一致: {'PASS' if ok else 'FAIL'}  "
+        f"(復元 {restored.restored} 件 / 未復元 {len(restored.missing)} 件)"
+    )
     return 0 if ok else 2
 
 
@@ -158,15 +162,11 @@ def _cmd_config(args: argparse.Namespace) -> int:
             if isinstance(cur, bool):
                 v = v.lower() in ("1", "true", "yes", "on")
             elif isinstance(cur, int):
-                try:
+                with contextlib.suppress(ValueError):
                     v = int(v)
-                except ValueError:
-                    pass
             elif isinstance(cur, float):
-                try:
+                with contextlib.suppress(ValueError):
                     v = float(v)
-                except ValueError:
-                    pass
             changes[k] = v
         store.update(**changes)
         print(f"更新しました: {sorted(changes)}")
@@ -190,9 +190,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default=None)
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--upstream", default=None, help="転送先のベース URL")
-    s.add_argument("--preset", default=None, help="転送先プリセット (openai/anthropic/deepseek/gemini/ollama/custom)")
+    s.add_argument(
+        "--preset",
+        default=None,
+        help="転送先プリセット (openai/anthropic/deepseek/gemini/ollama/custom)",
+    )
     s.add_argument("--ner", action="store_true", help="NER (GiNZA) を使う")
-    s.add_argument("--redact-only", dest="redact_only", action="store_true", help="復元せず完全に消去する")
+    s.add_argument(
+        "--redact-only",
+        dest="redact_only",
+        action="store_true",
+        help="復元せず完全に消去する",
+    )
     s.set_defaults(func=_cmd_serve)
 
     d = sub.add_parser("detect", help="テキストの個人情報を検出する")

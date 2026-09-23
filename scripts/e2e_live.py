@@ -28,10 +28,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import httpx  # noqa: E402
-import uvicorn  # noqa: E402
-from fastapi import FastAPI, Request  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
+import httpx
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 
 PASS = "\033[92mPASS\033[0m" if os.name != "nt" else "PASS"
 FAIL = "\033[91mFAIL\033[0m" if os.name != "nt" else "FAIL"
@@ -124,6 +124,62 @@ def wait_port(port: int, timeout: float = 20.0) -> bool:
     return False
 
 
+def terminate_tree(proc: subprocess.Popen, timeout: float = 10.0) -> bool:
+    """子プロセスごと確実に終わらせる。
+
+    PyInstaller の onefile 実行ファイルは、ブートローダ (親) が
+    実際のアプリ (子) を spawn する。親だけを terminate すると
+    子が孤児になってポートを掴んだまま残る。これは実測で確認した
+    (exe を terminate したあと jp-pii-mask-server が生存していた)。
+
+    そのため Windows では taskkill /T でプロセスツリーごと終わらせる。
+    戻り値: 完全に停止したと確認できたら True。
+    """
+    if proc.poll() is not None and os.name != "nt":
+        return True
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+
+    # ツリーの残骸がないか確認する (taskkill は非同期に効くことがある)
+    for _ in range(20):
+        if not _descendants_alive(proc.pid):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _descendants_alive(pid: int) -> bool:
+    """pid を親とする子プロセスがまだ生きているか (Windows のみ)。"""
+    if os.name != "nt":
+        return False
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", f"Get-CimInstance Win32_Process | Where-Object {{ $_.ParentProcessId -eq {pid} }} | Measure-Object | Select-Object -ExpandProperty Count"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        return int(out.stdout.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 本体
 # ---------------------------------------------------------------------------
@@ -156,7 +212,9 @@ def main() -> int:
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(ROOT)
     log_path = Path(workdir) / "proxy.log"
-    log_file = open(log_path, "w", encoding="utf-8")
+    # 子プロセスの出力先として開いたままにする必要があるため、
+    # with 文ではなく finally で閉じる (SIM115)。
+    log_file = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
     if args.exe:
         cmd = [
             str(Path(args.exe).resolve()),
@@ -305,13 +363,16 @@ def main() -> int:
             check("外部オリジンからの読み取りを拒否 (403)", r.status_code == 403)
     finally:
         print("\n[8] 後始末")
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stopped = terminate_tree(proc)
         log_file.close()
-        check("プロキシプロセスを停止", proc.poll() is not None)
+        check("プロキシプロセスを停止 (プロセスツリーごと)", stopped, f"pid={proc.pid}")
+        # ポートが実際に解放されたことまで確かめる (孤児が掴んでいないこと)
+        time.sleep(0.3)
+        check(
+            "ポートが解放された (孤児プロセスなし)",
+            not wait_port(proxy_port, timeout=1.0),
+            f"port={proxy_port}",
+        )
         up_server.should_exit = True
         time.sleep(0.3)
 

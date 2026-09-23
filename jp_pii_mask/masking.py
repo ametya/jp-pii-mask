@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
-from .detect import Detector, Entity, TYPE_LABELS
+from .detect import Detector, Entity
 from .vault import PLACEHOLDER_RE, Vault
 
 __all__ = ["MaskResult", "Masker", "StreamRestorer", "mask_text", "unmask_text"]

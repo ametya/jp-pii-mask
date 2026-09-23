@@ -334,12 +334,14 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
 | 対象 | 結果 |
 |---|---|
 | 自動テスト | **150 passed / 1 skipped**（`python -m pytest`） |
-| 疎通確認（実プロセス・実 HTTP） | **21/21 PASS**（`python scripts/e2e_live.py`） |
+| Lint（ruff） | **All checks passed** |
+| 疎通確認（実プロセス・実 HTTP） | **22/22 PASS**（`python scripts/e2e_live.py`） |
 | 単一実行ファイル化（PyInstaller） | **成功**（34.6 MB、起動と API 応答を実測） |
-| 上記実行ファイルでの疎通確認 | **21/21 PASS**（`--exe` で検証） |
+| 上記実行ファイルでの疎通確認 | **22/22 PASS**（`--exe` で検証） |
 | マスク → 送信 → 復元 | PASS（上流に原文が届かないことを実測） |
 | ストリーミング逐次復元 | PASS（チャンク分割耐性を含む） |
 | Vault 暗号化 | PASS（保存ファイルに原文が平文で現れないことを検証） |
+| 終了時のプロセス後始末 | PASS（孤児プロセスとポート掴みが残らないことを実測） |
 | デスクトップ GUI (Tauri) | **未検証**（Rust ツールチェーン不在のため未ビルド） |
 
 ### 検証中に見つけて直した実際の不具合
@@ -356,11 +358,16 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
 4. **GUI 連携の不整合** — Tauri の webview から管理 API を読むための
    CORS が無く、外部サイトからの読み取りも防げていませんでした。
    POST の応答形式も GUI の期待と一致していませんでした。
+5. **終了時に孤児プロセスが残る** — PyInstaller の onefile は
+   ブートローダ（親）が本体（子）を spawn するため、親だけを止めても
+   子がポートを掴んだまま残り、次の起動やビルドが失敗しました。
+   Tauri 側の `kill_child` にも同じ注意が必要です（`desktop/VERIFY.md`）。
 
 ### 自分で確かめる
 
 ```bash
 python -m pytest -q          # 単体・結合テスト
+python -m ruff check .       # Lint
 python scripts/e2e_live.py   # 実プロセスでの疎通確認
 ```
 

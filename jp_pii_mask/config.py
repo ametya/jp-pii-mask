@@ -12,7 +12,9 @@ API キーの扱い:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 import stat
 import threading
@@ -20,7 +22,9 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-__all__ = ["Config", "UPSTREAM_PRESETS", "config_dir", "default_config_path", "load_config"]
+__all__ = ["UPSTREAM_PRESETS", "Config", "config_dir", "default_config_path", "load_config"]
+
+log = logging.getLogger("jp_pii_mask.config")
 
 # 転送先の既定 URL。ユーザーが選ぶだけで使えるようにしておく。
 UPSTREAM_PRESETS: dict[str, dict[str, str]] = {
@@ -155,7 +159,7 @@ class Config:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Config":
+    def from_dict(cls, data: dict[str, Any]) -> Config:
         known = {f.name for f in fields(cls)}
         clean = {k: v for k, v in data.items() if k in known}
         return cls(**clean)
@@ -182,9 +186,11 @@ class ConfigStore:
                     data = json.loads(self.path.read_text(encoding="utf-8"))
                     if isinstance(data, dict):
                         self._config = Config.from_dict(data)
-                except Exception:
-                    # 壊れた設定は既定値で上書きせず、そのまま既定を使う
-                    pass
+                except Exception as exc:
+                    # 壊れた設定は既定値で上書きせず、そのまま既定を使う。
+                    # 黙って既定値に戻ると「設定したはずの転送先が効かない」
+                    # という分かりにくい症状になるため警告する。
+                    log.warning("設定ファイルを読めませんでした (既定値を使います): %s", exc)
             self._config.config_path = str(self.path)
             return self._config
 
@@ -198,10 +204,8 @@ class ConfigStore:
             tmp.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-            except OSError:
-                pass
             tmp.replace(self.path)
 
     def update(self, **changes: Any) -> Config:

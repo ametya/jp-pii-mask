@@ -27,9 +27,10 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -43,7 +44,7 @@ from .webui import PANEL_HTML
 
 log = logging.getLogger("jp_pii_mask.proxy")
 
-__all__ = ["MaskingProxy", "create_app", "Stats"]
+__all__ = ["MaskingProxy", "Stats", "create_app"]
 
 # ---------------------------------------------------------------------------
 # マスク対象から外すキー
@@ -100,10 +101,22 @@ def _cors_headers(origin: str) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, x-jp-pii-session, x-session-id, anthropic-version, anthropic-beta",
+        "Access-Control-Allow-Headers": (
+            "Content-Type, Authorization, x-api-key, x-jp-pii-session, "
+            "x-session-id, anthropic-version, anthropic-beta"
+        ),
         "Access-Control-Max-Age": "600",
         "Vary": "Origin",
     }
+
+
+def _sse_delta(text: str) -> bytes:
+    """SSE の 1 チャンク (OpenAI 互換の delta) を組み立てる。
+
+    ストリーム復元の末尾で保留分を吐き出すときに使う。
+    """
+    payload = {"choices": [{"delta": {"content": text}}]}
+    return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
 
 
 @dataclass
@@ -308,10 +321,11 @@ class MaskingProxy:
             if isinstance(node, str):
                 if not node:
                     return node
-                if key is None or (key not in RESTORE_KEYS):
-                    # 対象キー以外でもプレースホルダらしき文字列は復元する
-                    if not re.search(r"[\[［【].*?\d+[\]］】]", node):
-                        return node
+                if (key is None or key not in RESTORE_KEYS) and not re.search(
+                    r"[\[［【].*?\d+[\]］】]", node
+                ):
+                    # 対象キー以外でも、プレースホルダらしき文字列は復元する
+                    return node
                 res = masker.unmask(node, vault)
                 restored += res.restored
                 misses += len(res.missing)
@@ -411,7 +425,8 @@ class MaskingProxy:
         resp_headers = {
             k: v
             for k, v in upstream.headers.items()
-            if k.lower() not in {"content-length", "content-encoding", "transfer-encoding", "connection"}
+            if k.lower()
+            not in {"content-length", "content-encoding", "transfer-encoding", "connection"}
         }
 
         ctype = upstream.headers.get("content-type", "")
@@ -494,16 +509,16 @@ class MaskingProxy:
                 if payload == "[DONE]":
                     rest = restorer.flush()
                     if rest:
-                        yield f"data: {json.dumps({'choices': [{'delta': {'content': rest}}]}, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield _sse_delta(rest)
                     yield b"data: [DONE]\n"
                     continue
 
                 try:
                     obj = json.loads(payload)
                 except Exception:
-                    # JSON でない data 行は素のテキストとして復元する
+                    # JSON でない data 行 (コメントや生テキスト) はそのまま復元する
                     out = restorer.feed(payload)
-                    yield f"data: {out}\n".encode("utf-8")
+                    yield f"data: {out}\n".encode()
                     continue
 
                 new_obj = restore_obj(obj, None)
@@ -514,9 +529,7 @@ class MaskingProxy:
 
             rest = restorer.flush()
             if rest:
-                yield (
-                    "data: " + json.dumps({"choices": [{"delta": {"content": rest}}]}, ensure_ascii=False) + "\n\n"
-                ).encode("utf-8")
+                yield _sse_delta(rest)
         except Exception as exc:
             self.stats.last_error = f"ストリーム復元中のエラー: {exc}"
             log.warning("ストリーム復元エラー: %s", exc)

@@ -1,12 +1,12 @@
 """Vault とマスキング／復元のテスト。"""
 
-import json
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
-from jp_pii_mask.detect import Detector, Entity
+from jp_pii_mask.detect import Detector
 from jp_pii_mask.masking import Masker, StreamRestorer, mask_text, unmask_text
 from jp_pii_mask.vault import PLACEHOLDER_RE, SessionVaults, Vault
 
@@ -85,9 +85,9 @@ class TestVaultPersistence:
             v.placeholder_for("田中太郎", "PERSON")
             v.placeholder_for("090-1234-5678", "PHONE")
             v.save()
-            blob = open(path, "rb").read()
-            assert "田中太郎".encode("utf-8") not in blob
-            assert "090-1234-5678".encode("utf-8") not in blob
+            blob = Path(path).read_bytes()
+            assert "田中太郎".encode() not in blob
+            assert b"090-1234-5678" not in blob
 
     def test_key_file_permissions_are_restrictive(self):
         if os.name == "nt":
@@ -191,8 +191,9 @@ class TestMaskUnmaskRoundtrip:
         assert once == twice
 
     def test_functional_api(self, vault):
-        masked, res = mask_text("田中太郎です。", vault)
+        masked, result = mask_text("田中太郎です。", vault)
         assert "田中太郎" not in masked
+        assert result.count == 1
         assert unmask_text(masked, vault) == "田中太郎です。"
 
 

@@ -70,3 +70,39 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S"]
+
+ignore = [
+  # 本ツールは常駐プロセスとして動くため、「外部要因で落ちない」ことが要件。
+  # 壊れた設定ファイル・破損した Vault・未導入/不整合な NER モデル・
+  # 上流 API の想定外応答はすべて現実に起こり得る。
+  # そのため境界では意図的に広い except を使う。
+  #
+  # 重要: 握りつぶす箇所には必ずログを出し、プロキシでは
+  # stats.last_error にも記録して外部から観測できるようにしている。
+  "BLE001",  # blind-except
+  "S110",    # try-except-pass
+  "S112",    # try-except-continue
+  "S101",    # assert (テストと内部不変条件で使用)
+
+  # 日本語の全角文字・記号・括弧は本製品の対象そのものであり、
+  # 「紛らわしい Unicode 文字」の警告は意味を持たない。
+  "RUF001",  # ambiguous-unicode-character-string
+  "RUF002",  # ambiguous-unicode-character-docstring
+  "RUF003",  # ambiguous-unicode-character-comment
+]
+
+[tool.ruff.lint.per-file-ignores]
+# テストは異常入力・例外的構造を意図的に書く。
+# E402 は pytest.importorskip / sys.path 設定の後に import するため。
+"tests/*" = ["S", "SIM", "B", "E402"]
+# 検証スクリプトはテストに準じる (ROOT を sys.path に足してから import する)
+"scripts/*" = ["S", "E402", "E501"]
+# 埋め込み HTML/CSS は 1 行が長くなる
+"jp_pii_mask/webui.py" = ["E501"]
+# 語彙データの表は 1 行に多数の語を並べる
+"jp_pii_mask/words.py" = ["E501"]
+# Tauri 用の補助スクリプト
+"desktop/scripts/*" = ["S", "SIM"]
