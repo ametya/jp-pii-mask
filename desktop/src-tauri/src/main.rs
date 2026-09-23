@@ -31,9 +31,9 @@
 use std::sync::Mutex;
 
 use tauri::{
-    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
+    menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent,
+    AppHandle, Emitter, Manager, RunEvent, Wry,
 };
 
 use tauri_plugin_shell::process::CommandChild;
@@ -64,32 +64,101 @@ const MENU_ID_QUIT: &str = "quit-app";
 ///   false → OFF にしたい
 const EVENT_TRAY_REQUEST_TOGGLE: &str = "tray-request-toggle";
 
-/// 起動したサイドカーのハンドル。
+/// アプリが保持する可変状態。
 ///
-/// アプリ終了時に kill するために保持する。`Option` なのは、起動失敗時や
-/// 外部で既に `jp-pii-mask serve` が動いている運用を許容するため。
-struct SidecarState(Mutex<Option<CommandChild>>);
+/// - `child`   : 起動したサイドカー。アプリ終了時に停止するために持つ。
+/// - `toggle`  : トレイの「マスキング保護 ON/OFF」項目のハンドル。
+///
+/// `Option` なのは、サイドカー起動失敗時や、外部で既に
+/// `jp-pii-mask serve` が動いている運用を許容するため。
+///
+/// `toggle` を保持している理由 (実測に基づく):
+///   `TrayIcon` には `set_checked` も `menu()` も存在しない
+///   (`set_menu` のみ)。チェック状態を読み書きするには
+///   `CheckMenuItem` のハンドルを自分で保持する必要がある。
+struct SidecarState {
+    child: Mutex<Option<CommandChild>>,
+    toggle: Mutex<Option<CheckMenuItem<Wry>>>,
+}
 
 impl SidecarState {
     fn new() -> Self {
-        Self(Mutex::new(None))
+        Self {
+            child: Mutex::new(None),
+            toggle: Mutex::new(None),
+        }
     }
 
-    /// 保持している子プロセスを kill する。二重呼び出し安全。
+    /// 保持しているサイドカーを停止する。二重呼び出し安全。
     fn kill_child(&self) {
-        // NOTE: `Mutex::lock()` は Result を返す。poisoned でも中身を取り出せるよう
-        //       unwrap_or_else で復旧する。
-        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // `Mutex::lock()` は Result を返す。poisoned でも中身を取り出せるよう
+        // unwrap_or_else で復旧する。
+        let mut guard = self.child.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(child) = guard.take() {
-            // NOTE: 正常に kill できたかを UI に通知する仕組みは未実装。
-            //       失敗しても終了処理は続行する。
+            terminate_sidecar(child);
+        }
+    }
+}
+
+/// サイドカーをプロセスツリーごと停止する。
+///
+/// ⚠️ 重要 (実測で判明した挙動):
+///   PyInstaller の onefile 実行ファイルは、ブートローダ (親) が
+///   実際のアプリ (子) を spawn する。したがって親だけを kill すると
+///   **子が孤児として残り、ポート 8787 を掴んだままになる。**
+///   これは実際に発生し、次の起動やビルドが `PermissionError`
+///   (実行ファイルがロックされている) で失敗した。
+///
+///   そのため Windows では `taskkill /T` でツリーごと終了させる。
+fn terminate_sidecar(child: CommandChild) {
+    let pid = child.pid();
+
+    #[cfg(windows)]
+    {
+        use std::process::{Command, Stdio};
+        let killed = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if killed {
+            println!("[jp-pii-mask-desktop] サイドカー (pid {pid}) をツリーごと終了しました");
+        } else {
+            // taskkill が使えない環境では、できる範囲で停止する。
+            eprintln!(
+                "[jp-pii-mask-desktop] taskkill に失敗しました (pid {pid})。直接 kill を試みます"
+            );
             if let Err(err) = child.kill() {
                 eprintln!("[jp-pii-mask-desktop] サイドカーの終了に失敗しました: {err}");
-            } else {
-                println!("[jp-pii-mask-desktop] サイドカーを終了しました");
             }
         }
     }
+
+    #[cfg(not(windows))]
+    {
+        // NOTE: Unix でも onefile は子を spawn するため、プロセスグループ単位の
+        //       終了が必要になる可能性がある (未検証)。まず kill を試み、
+        //       孤児が残るようなら独立したプロセスグループで起動する方式に
+        //       切り替えること。
+        if let Err(err) = child.kill() {
+            eprintln!("[jp-pii-mask-desktop] サイドカーの終了に失敗しました (pid {pid}): {err}");
+        } else {
+            println!("[jp-pii-mask-desktop] サイドカー (pid {pid}) を終了しました");
+        }
+    }
+}
+
+/// トレイのトグル項目のチェック状態を読む。
+///
+/// メニュークリックの直後は Tauri が既に checked を反転させているため、
+/// ここで読んだ値が「ユーザーの意図した新しい状態」になる。
+fn toggle_is_checked(app: &AppHandle) -> Option<bool> {
+    let state = app.state::<SidecarState>();
+    let guard = state.toggle.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().and_then(|item| item.is_checked().ok())
 }
 
 // =============================================================================
@@ -102,15 +171,14 @@ impl SidecarState {
 /// トレイ表示をその値に合わせる。API 呼び出し自体は webview 側の責務。
 #[tauri::command]
 fn sync_tray_checked(app: AppHandle, checked: bool) -> Result<(), String> {
-    // NOTE: `Manager::tray_by_id` のシグネチャは Tauri 2 で
-    //       `fn tray_by_id(&self, id: &str) -> Option<TrayIcon<R>>` と想定。
-    let tray = app
-        .tray_by_id(TRAY_ID)
-        .ok_or_else(|| format!("トレイ '{TRAY_ID}' が見つかりません"))?;
-    // NOTE: `TrayIcon::set_checked` の存在は未確認。無ければ
-    //       メニュー項目ハンドルを別途 `app.manage` して
-    //       `CheckMenuItem::set_checked` を呼ぶ実装に差し替えること。
-    tray.set_checked(checked)
+    // `TrayIcon` 側ではなく `CheckMenuItem` 側を更新する (実 API に合わせた形)。
+    // ハンドルは setup 時に SidecarState に格納済み。
+    let state = app.state::<SidecarState>();
+    let guard = state.toggle.lock().unwrap_or_else(|e| e.into_inner());
+    let item = guard
+        .as_ref()
+        .ok_or_else(|| "トレイのトグル項目がまだ初期化されていません".to_string())?;
+    item.set_checked(checked)
         .map_err(|e| format!("トレイのチェック状態を更新できません: {e}"))
 }
 
@@ -125,7 +193,7 @@ fn quit_app(app: AppHandle) {
 /// サイドカーが起動済みかどうかを webview に伝える (表示用)。
 #[tauri::command]
 fn sidecar_running(state: tauri::State<'_, SidecarState>) -> bool {
-    let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = state.child.lock().unwrap_or_else(|e| e.into_inner());
     guard.is_some()
 }
 
@@ -169,10 +237,10 @@ fn main() {
                     println!(
                         "[jp-pii-mask-desktop] サイドカー {SIDECAR_NAME} を起動しました (port {DEFAULT_PORT})"
                     );
-                    // 子プロセスのハンドルを保持 (終了時に kill する)。
+                    // 子プロセスのハンドルを保持 (終了時に停止する)。
                     {
                         let state = app.state::<SidecarState>();
-                        let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut guard = state.child.lock().unwrap_or_else(|e| e.into_inner());
                         *guard = Some(child);
                     }
                     // 標準出力/エラーを親のログに転送する。
@@ -218,6 +286,14 @@ fn main() {
                 .checked(false)
                 .build(app)?;
 
+            // チェック状態を読み書きするためにハンドルを保持する。
+            // (`TrayIcon` からは取得できないため。)
+            {
+                let state = app.state::<SidecarState>();
+                let mut guard = state.toggle.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(toggle_item.clone());
+            }
+
             let settings_item = MenuItemBuilder::with_id(MENU_ID_SETTINGS, "設定を開く").build(app)?;
             let quit_item = MenuItemBuilder::with_id(MENU_ID_QUIT, "終了").build(app)?;
 
@@ -240,19 +316,9 @@ fn main() {
                     match event.id().as_ref() {
                         MENU_ID_TOGGLE => {
                             // メニュークリック時点で CheckMenuItem は Tauri 側が
-                            // 自動トグル済み。よって「新しい状態」は、クリック直後の
-                            // メニュー項目の checked 値を読むのが正しい。
-                            // NOTE: `CheckMenuItem::is_checked` 相当の getter 名は未確認。
-                            //       ここでは確実性を優先し、webview が
-                            //       /admin/api/state を再取得して解決する設計にしている
-                            //       (payload の bool は「反転要求」のヒント)。
-                            let desired = app_handle
-                                .tray_by_id(TRAY_ID)
-                                .and_then(|t| t.menu())
-                                .and_then(|m| m.get(MENU_ID_TOGGLE))
-                                .and_then(|i| i.as_check_menuitem().cloned())
-                                .map(|i| i.is_checked())
-                                .unwrap_or(true);
+                            // 自動トグル済み。よって「新しい状態」は、保持している
+                            // ハンドルから読んだ checked 値が正しい。
+                            let desired = toggle_is_checked(app_handle).unwrap_or(true);
 
                             // webview にトグル要求を投げる。
                             // NOTE: Tauri 2 では `Emitter` トレイトが必要。

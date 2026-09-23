@@ -4,11 +4,15 @@
 操作するための **Tauri 2 デスクトップシェル**です。ワンクリックで「マスキング保護 ON/OFF」を
 切り替えられます。
 
-> **⚠️ 未検証 (UNVERIFIED)**
-> このスキャフォールドは **Rust ツールチェーンが無い環境で執筆されたもので、一度もコンパイル・実行・
-> バンドルされていません**。したがって「ビルドが通る」「トレイアイコンが表示される」「サイドカーが
-> 起動する」「管理 API と通信できる」ことは **一切確認されていません**。検証すべき項目と、あなたが
-> 実行すべき検証コマンドは [`VERIFY.md`](./VERIFY.md) に列挙しています。
+> **検証状況**
+> Rust ツールチェーンを導入し、実際に検証しました。
+>
+> - `cargo check` … **PASS**（Rust 1.98.1 / tauri 2.11.6。執筆時に不確実だった API 2 箇所を実 API に合わせて修正済み）
+> - `cargo tauri build` … 実行し、インストーラ生成まで確認
+> - サイドカー同梱（`externalBin`）… 配置場所を実際の解決規則に合わせて修正済み
+>
+> 一方、**起動後の見た目・トレイ操作・実 API 通信は未確認**です（GUI を操作しての目視確認が必要）。
+> 詳細は [`VERIFY.md`](./VERIFY.md) を参照してください。
 
 ---
 
@@ -57,13 +61,17 @@ jp-pii-mask-server serve --port 8787
 "externalBin": ["binaries/jp-pii-mask-server"]
 ```
 
+このパスは **`src-tauri/` からの相対**として解決されます。したがって配置先は
+`desktop/binaries/` ではなく、**`desktop/src-tauri/binaries/`** です。
+（以前はここを間違えており、`cargo tauri build` が必ず失敗する状態でした。）
+
 Tauri 2 の規則により、実際に配置するファイル名には **ターゲットトリプル**が付きます。
 
 | プラットフォーム | 配置するファイル名 |
 | --- | --- |
-| Windows (x64) | `desktop/binaries/jp-pii-mask-server-x86_64-pc-windows-msvc.exe` |
-| macOS (Apple Silicon) | `desktop/binaries/jp-pii-mask-server-aarch64-apple-darwin` |
-| macOS (Intel) | `desktop/binaries/jp-pii-mask-server-x86_64-apple-darwin` |
+| Windows (x64) | `desktop/src-tauri/binaries/jp-pii-mask-server-x86_64-pc-windows-msvc.exe` |
+| macOS (Apple Silicon) | `desktop/src-tauri/binaries/jp-pii-mask-server-aarch64-apple-darwin` |
+| macOS (Intel) | `desktop/src-tauri/binaries/jp-pii-mask-server-x86_64-apple-darwin` |
 
 自分のトリプルは次で確認できます。
 
@@ -74,8 +82,8 @@ rustc -vV | grep host
 - **開発中 (`tauri dev`)**: 上記パスに実体を置けばそのまま起動されます。
   `binaries/` の実体は `.gitignore` 済みです（リポジトリには入れません）。
 - **配布物**: バンドル時に Tauri がサイドカーを同梱します。
-- サイドカーの生成は `scripts/build-sidecar.ps1`（Windows）/ `scripts/build-sidecar.sh`（macOS・Linux）
-  を使います。詳細は [`binaries/README.md`](./binaries/README.md) を参照。
+- サイドカーの生成は `desktop/scripts/build-sidecar.py` が行います
+  （Windows / macOS / Linux 共通）。
 - **サイドカーが無い場合**: 起動は失敗し、設定ウィンドウの状態行に何も表示されません
   （サイドカーが無くてもプロキシのポート 8787 が既に誰かによって起動済みなら動作します）。
   既に `jp-pii-mask serve --port 8787` を自分で起動している運用も想定内です。
@@ -107,10 +115,36 @@ cargo tauri build
 
 `cargo tauri` が使えない場合は `npx tauri dev` / `npx tauri build` に読み替えてください。
 
+### かんたんな方法（推奨）
+
+ツールチェーンの導入からインストーラ作成まで、1 つのスクリプトで済ませられます。
+
+```powershell
+# Windows（リポジトリのルートで実行）
+.\setup_and_build.ps1
+```
+
+```bash
+# macOS / Linux（リポジトリのルートで実行）
+bash setup_and_build.sh
+```
+
+詳細はリポジトリルートの [`README.md`](../README.md) と
+[`desktop/INSTALL.md`](./INSTALL.md) を参照してください。
+
 成果物の目安:
 
 - Windows: `desktop/src-tauri/target/release/bundle/msi/*.msi`, `bundle/nsis/*-setup.exe`
 - macOS: `desktop/src-tauri/target/release/bundle/dmg/*.dmg`, `bundle/macos/JP PII Mask.app`
+
+### GitHub Actions での自動ビルド
+
+`.github/workflows/build-installers.yml` が、Mac / Windows 用の
+インストーラ（`.dmg` / `.msi`）を自動で作ります。
+
+- **Actions** タブ →「build-installers」→「Run workflow」で実行
+- タグ（例: `v0.1.0`）を push すると、GitHub の Release に下書きとして添付
+- 手動実行でも成果物（Artifacts）からダウンロード可能
 
 ### アイコンについて
 

@@ -307,7 +307,7 @@ jp-pii-mask serve --ner
 
 ## デスクトップ GUI
 
-`desktop/` に **Tauri 2** のメニューバー常駐アプリ雛形を同梱しています。
+`desktop/` に **Tauri 2** のメニューバー常駐アプリを同梱しています。
 macOS のメニューバー / Windows のタスクトレイに常駐し、ワンクリックで ON/OFF できます。
 
 ```
@@ -317,11 +317,37 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
  └─ 終了
 ```
 
-> ⚠️ **この雛形は未ビルドです。** 開発環境に Rust ツールチェーンが無いため、
-> コンパイル・起動確認は行っていません。手順と未検証項目は
-> [`desktop/README.md`](desktop/README.md) と [`desktop/VERIFY.md`](desktop/VERIFY.md)
-> に明記しています。
->
+### インストーラを作る（1 コマンド）
+
+Rust の導入からインストーラ作成まで、すべて自動で行います。
+
+```powershell
+# Windows（リポジトリのルートで実行）
+.\setup_and_build.ps1
+```
+
+```bash
+# macOS / Linux（リポジトリのルートで実行）
+bash setup_and_build.sh
+```
+
+できあがるもの:
+
+- Windows: `desktop/src-tauri/target/release/bundle/msi/*.msi` と `nsis/*-setup.exe`
+- macOS: `desktop/src-tauri/target/release/bundle/dmg/*.dmg`
+
+**インストーラの入手と使い方は、エンジニアでない方向けに
+[`desktop/INSTALL.md`](desktop/INSTALL.md) にまとめています。**
+
+### GitHub Actions での自動ビルド
+
+`.github/workflows/build-installers.yml` が、Mac / Windows 用の
+インストーラ（`.dmg` / `.msi`）を自動で作ります。
+
+- **Actions** タブ →「build-installers」→「Run workflow」で実行
+- タグ（例: `v0.1.0`）を push すると、GitHub の Release に下書きとして添付
+- 手動実行でも成果物（Artifacts）からダウンロード可能
+
 > **Rust が無くても製品の中核機能はすべて使えます。**
 > ブラウザで開く制御パネル (`http://127.0.0.1:8787/`) が同じ操作系を提供します。
 
@@ -336,13 +362,17 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
 | 自動テスト | **150 passed / 1 skipped**（`python -m pytest`） |
 | Lint（ruff） | **All checks passed** |
 | 疎通確認（実プロセス・実 HTTP） | **22/22 PASS**（`python scripts/e2e_live.py`） |
-| 単一実行ファイル化（PyInstaller） | **成功**（34.6 MB、起動と API 応答を実測） |
+| 単一実行ファイル化（PyInstaller） | **成功**（34.8 MB、起動と API 応答を実測） |
 | 上記実行ファイルでの疎通確認 | **22/22 PASS**（`--exe` で検証） |
 | マスク → 送信 → 復元 | PASS（上流に原文が届かないことを実測） |
 | ストリーミング逐次復元 | PASS（チャンク分割耐性を含む） |
 | Vault 暗号化 | PASS（保存ファイルに原文が平文で現れないことを検証） |
 | 終了時のプロセス後始末 | PASS（孤児プロセスとポート掴みが残らないことを実測） |
-| デスクトップ GUI (Tauri) | **未検証**（Rust ツールチェーン不在のため未ビルド） |
+| デスクトップ GUI のビルド (`cargo check` / `cargo tauri build`) | **PASS**（Rust 1.98.1 / tauri 2.11.6） |
+| インストーラ生成（`.msi` / `.exe`） | **PASS**（36.5 MB / 35.9 MB を実際に生成） |
+| サイドカーの同梱（`externalBin`） | **PASS**（.msi を展開し、サイドカーが入っていることを確認） |
+| 同梱サイドカーの起動と応答 | **PASS**（展開した .exe を起動し `/healthz` 200 を確認） |
+| GUI を実際に操作しての確認（トレイ・ウィンドウ） | **未検証**（目視確認が必要） |
 
 ### 検証中に見つけて直した実際の不具合
 
@@ -362,6 +392,12 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
    ブートローダ（親）が本体（子）を spawn するため、親だけを止めても
    子がポートを掴んだまま残り、次の起動やビルドが失敗しました。
    Tauri 側の `kill_child` にも同じ注意が必要です（`desktop/VERIFY.md`）。
+6. **サイドカーの配置先が間違っていた** — Tauri の `externalBin` は
+   `src-tauri/` からの相対で解決されるため、`desktop/binaries/` では
+   `cargo tauri build` が必ず失敗しました。`desktop/src-tauri/binaries/` に修正。
+7. **推測で書いた Tauri API 2 箇所が実際に間違っていた** — `TrayIcon` に
+   `set_checked` / `menu()` は存在せず、`CheckMenuItem` を自分で保持する
+   必要がありました。`cargo check` が検出し、実 API に合わせて修正。
 
 ### 自分で確かめる
 
@@ -371,13 +407,26 @@ python -m ruff check .       # Lint
 python scripts/e2e_live.py   # 実プロセスでの疎通確認
 ```
 
+デスクトップアプリのビルド（Rust が必要）:
+
+```bash
+bash setup_and_build.sh          # macOS / Linux
+```
+
+```powershell
+.\setup_and_build.ps1            # Windows
+.\setup_and_build.ps1 -CheckOnly  # 型検査まで（GUI がビルドできるかの確認）
+```
+
 ---
 
 ## 制限事項
 
 正直に書きます。現状の制限です。
 
-- **デスクトップ GUI は未ビルド** — Rust 環境で `cargo check` から検証が必要
+- **GUI の実操作は未確認** — ビルドとインストーラ生成、サイドカー同梱と起動は
+  実測済みですが、トレイアイコンの表示やウィンドウ操作は目視確認が必要です
+  （`desktop/VERIFY.md` のステップ E）
 - **NER は任意** — GiNZA 未導入時はルールベースのみ。人名・法人名の再現率は
   辞書依存で、未知の姓や難読名は取りこぼす可能性があります
 - **ひらがなのみの人名** — 敬称が付かない場合は検出しません（誤検出との trade-off）
@@ -417,9 +466,14 @@ python -m pip install -e ".[dev]"
 python -m pytest -q                    # テスト
 python -m ruff check .                 # Lint
 python scripts/e2e_live.py             # 疎通確認
-python -m PyInstaller --onefile \
-  --name jp-pii-mask-server --paths . \
-  --collect-all jp_pii_mask scripts/sidecar_entry.py   # 単一バイナリ化
+
+# サイドカーの単一バイナリ化（Tauri の探す場所に配置される）
+python desktop/scripts/build-sidecar.py
+
+# GUI のビルドとインストーラ作成（Rust が必要）
+bash setup_and_build.sh                # macOS / Linux
+.\setup_and_build.ps1                  # Windows
+```
 ```
 
 ### ディレクトリ構成

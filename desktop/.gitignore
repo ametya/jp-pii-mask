@@ -14,10 +14,21 @@ build/
 *.spec
 
 # PyInstaller サイドカーの実体 (プラットフォーム依存・容量大のため管理しない)
+#
+# 注意: 配置先は Tauri の externalBin の解決規則により
+#       src-tauri/ からの相対になる (desktop/binaries/ ではない)。
+#       パターンにスラッシュを含めると .gitignore のある場所 (desktop/) に
+#       固定されるため、src-tauri 側は別途書く必要がある。
 binaries/jp-pii-mask-server
 binaries/jp-pii-mask-server.exe
 binaries/jp-pii-mask-server-*
 !binaries/README.md
+
+# 実際の配置先 (src-tauri/ から見た binaries/)
+src-tauri/binaries/jp-pii-mask-server
+src-tauri/binaries/jp-pii-mask-server.exe
+src-tauri/binaries/jp-pii-mask-server-*
+!src-tauri/binaries/README.md
 
 # テンポラリ
 *.log
