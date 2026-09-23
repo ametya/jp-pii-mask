@@ -1,0 +1,40 @@
+[package]
+name = "jp-pii-mask-desktop"
+version = "0.1.0"
+description = "JP PII Mask デスクトップシェル (メニューバー常駐 / システムトレイ常駐)"
+authors = ["jp-pii-mask contributors"]
+edition = "2021"
+# macOS 11.0 以上を要件とするため、対応する最低バージョンを明示する。
+# (tauri.conf.json の bundle.macOS.minimumSystemVersion と揃えること)
+rust-version = "1.77"
+license = "MIT"
+
+[build-dependencies]
+# ビルド時に tauri.conf.json を読み込み、リソース/権限スキーマを生成する。
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# NOTE: Rust ツールチェーンが無い環境で執筆したため、下記のバージョン要件が
+#       実際に解決可能かは未検証。`cargo check` で確認すること。
+#
+# tray-icon 機能が無いとシステムトレイ (TrayIconBuilder) が使えない。
+tauri = { version = "2", features = ["tray-icon"] }
+# サイドカーの起動に必須。
+tauri-plugin-shell = "2"
+# ログイン時の自動起動。
+tauri-plugin-autostart = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# 既定はデスクトップ向けのカスタムプロトコル。
+custom-protocol = ["tauri/custom-protocol"]
+
+# リリースビルドを小さくするためのプロファイル設定。
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

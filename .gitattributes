@@ -1,0 +1,22 @@
+# 改行コードの正規化 (Windows / macOS / Linux 間の差分ノイズを防ぐ)
+* text=auto eol=lf
+
+# シェルスクリプトは LF 必須 (CRLF だと bash が壊れる)
+*.sh text eol=lf
+
+# PowerShell は LF でも動作する (重要なのは BOM の有無)
+*.ps1 text eol=lf
+
+# バイナリ
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+
+# ローカル状態・秘密 (誤コミット防止)
+*.jpvault binary
+*.jpvault.json text eol=lf
+.env text eol=lf

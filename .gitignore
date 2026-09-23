@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets / local state (NEVER commit)
+.env
+*.jpvault
+*.jpvault.json
+config.local.json
+samples/private/
+scratch/
+
+# Rust / Tauri
+desktop/target/
+desktop/dist/
+desktop/binaries/jp-pii-mask-server
+desktop/binaries/jp-pii-mask-server.exe
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

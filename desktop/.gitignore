@@ -1,0 +1,26 @@
+# desktop/ のビルド成果物
+#
+# 注意: Rust/Tauri のビルドは src-tauri/ の中で行われるため、
+#       Cargo が作る target/ は src-tauri/target/ になる。
+#       どちらの位置でも拾えるように両方を書いている。
+
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Tauri のビルド補助
+dist/
+build/
+*.spec
+
+# PyInstaller サイドカーの実体 (プラットフォーム依存・容量大のため管理しない)
+binaries/jp-pii-mask-server
+binaries/jp-pii-mask-server.exe
+binaries/jp-pii-mask-server-*
+!binaries/README.md
+
+# テンポラリ
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

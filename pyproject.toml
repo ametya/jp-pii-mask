@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jp-pii-mask"
+version = "0.1.0"
+description = "日本語に特化した個人情報マスキング／復元プロキシ (AI API 用)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jp-pii-mask contributors" }]
+keywords = ["pii", "anonymization", "japanese", "llm", "proxy", "privacy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: Japanese",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: Text Processing :: Linguistic",
+]
+
+# 実行時に必須の依存は意図的に最小化している。
+#   理由: 単一バイナリ化 (PyInstaller) と監査容易性を優先するため。
+#     - fastapi/uvicorn : プロキシ HTTP 層
+#     - cryptography    : Vault の保存時暗号化 (AES-GCM)
+#     - pydantic        : 設定/API スキーマ
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.5",
+  "cryptography>=42.0",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# 高精度 NER。未インストールでもルールベース + 辞書で動作する (劣化モード)。
+ner = [
+  "spacy>=3.7",
+  "ja-ginza>=5.2",
+]
+# 日本語トークナイザ。SudachiPy は辞書内蔵で軽量。
+tokenizer = [
+  "sudachipy>=0.6.8",
+  "sudachidict_core>=20240409",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.4",
+  "pyinstaller>=6.6",
+]
+
+[project.scripts]
+jp-pii-mask = "jp_pii_mask.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jp_pii_mask*"]
+
+[tool.setuptools.package-data]
+jp_pii_mask = ["resources/*.json", "web/*.html", "web/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

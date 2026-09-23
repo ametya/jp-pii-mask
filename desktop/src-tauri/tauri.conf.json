@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JP PII Mask",
+  "version": "0.1.0",
+  "identifier": "jp.pii.mask.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "JP PII Mask 設定",
+        "width": 380,
+        "height": 520,
+        "minWidth": 360,
+        "minHeight": 460,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": true,
+        "skipTaskbar": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8787 http://localhost:8787"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "日本語 PII マスキングプロキシの常駐コントローラ",
+    "longDescription": "jp-pii-mask プロキシを常駐させ、メニューバー / システムトレイからマスキング保護の ON/OFF を切り替えるデスクトップシェル。",
+    "copyright": "MIT License",
+    "externalBin": [
+      "binaries/jp-pii-mask-server"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

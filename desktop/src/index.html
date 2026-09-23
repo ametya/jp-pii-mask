@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JP PII Mask 設定</title>
+<!--
+  設定ウィンドウ (380x520)。
+  - ビルドステップ無し / CDN 無し / 外部フォント無し (オフライン動作)
+  - CSS はすべてインライン
+  - 通信は src/main.js の fetch() のみ
+  ⚠️ 未検証: ブラウザ/Tauri 上でのレンダリング確認は行っていません (VERIFY.md 参照)。
+-->
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --fg: #1c1e21;
+    --muted: #6b7280;
+    --line: #dfe1e5;
+    --card: #ffffff;
+    --on: #16a34a;
+    --on-bg: #dcfce7;
+    --off: #9ca3af;
+    --off-bg: #f3f4f6;
+    --danger: #dc2626;
+    --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d;
+      --fg: #e8eaed;
+      --muted: #9aa0a6;
+      --line: #2c3038;
+      --card: #1e2127;
+      --on: #4ade80;
+      --on-bg: #14301e;
+      --off: #6b7280;
+      --off-bg: #23262d;
+      --danger: #f87171;
+      --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Meiryo", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .wrap { padding: 14px; display: flex; flex-direction: column; gap: 12px; height: 100%; }
+
+  /* ---- 大きな ON/OFF トグル ---- */
+  .toggle-btn {
+    width: 100%;
+    padding: 18px 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--off-bg);
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transition: background .15s, border-color .15s;
+  }
+  .toggle-btn:hover { border-color: var(--accent); }
+  .toggle-btn[data-state="on"] { background: var(--on-bg); border-color: var(--on); }
+  .toggle-emoji { font-size: 26px; line-height: 1; }
+  .toggle-label { letter-spacing: .02em; }
+  .toggle-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
+
+  /* ---- カード ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card h2 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  label.field { display: flex; flex-direction: column; gap: 4px; }
+  label.field > span { font-size: 11px; color: var(--muted); }
+  select, input[type="password"], input[type="text"] {
+    width: 100%;
+    padding: 7px 9px;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: inherit;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .row > .fixed { flex: 0 0 auto; }
+
+  button.action {
+    padding: 7px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button.action:hover { filter: brightness(1.08); }
+  button.action[disabled] { opacity: .5; cursor: default; }
+
+  /* ---- 状態表示 ---- */
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12px; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* ---- ステータス行 ---- */
+  .statusbar {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--off);
+    flex: 0 0 auto;
+  }
+  .dot.ok { background: var(--on); }
+  .dot.err { background: var(--danger); }
+  .dot.wait { background: #eab308; }
+  .status-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .hint { font-size: 10px; color: var(--muted); }
+  .hidden { display: none !important; }
+  .linkish {
+    background: none; border: none; padding: 0; font: inherit;
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ メインの ON/OFF トグル ============ -->
+  <button id="toggleBtn" class="toggle-btn" data-state="off" aria-pressed="false">
+    <span class="toggle-emoji" id="toggleEmoji">🛡️</span>
+    <span class="toggle-label">マスキング保護 ON/OFF</span>
+    <span class="toggle-sub" id="toggleSub">状態を確認しています…</span>
+  </button>
+
+  <!-- ============ 上流 API 設定 ============ -->
+  <section class="card">
+    <h2>接続先 AI API</h2>
+
+    <label class="field">
+      <span>プロバイダ</span>
+      <select id="upstreamSelect">
+        <option value="https://api.openai.com">OpenAI</option>
+        <option value="https://api.anthropic.com">Anthropic</option>
+        <option value="https://api.deepseek.com">DeepSeek</option>
+        <option value="https://generativelanguage.googleapis.com">Gemini</option>
+        <option value="__custom__">カスタム…</option>
+      </select>
+    </label>
+
+    <label class="field hidden" id="customWrap">
+      <span>カスタム URL</span>
+      <input type="text" id="customUpstream" placeholder="https://example.com" spellcheck="false" />
+    </label>
+
+    <label class="field">
+      <span>API キー <span class="hint">(この端末内のプロキシ設定にのみ保存されます)</span></span>
+      <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+    </label>
+
+    <div class="row">
+      <button class="action fixed" id="saveBtn">保存して適用</button>
+      <button class="action fixed" id="clearKeyBtn" title="保存済み API キーを消去">キー消去</button>
+    </div>
+  </section>
+
+  <!-- ============ 稼働状況 ============ -->
+  <section class="card">
+    <h2>稼働状況</h2>
+    <dl class="stats">
+      <dt>ポート</dt>
+      <dd id="statPort">—</dd>
+      <dt>プロキシ有効</dt>
+      <dd id="statEnabled">—</dd>
+      <dt>マスキング</dt>
+      <dd id="statMasking">—</dd>
+      <dt>API キー</dt>
+      <dd id="statKey">—</dd>
+      <dt>検出</dt>
+      <dd id="statDetected">—</dd>
+      <dt>置換</dt>
+      <dd id="statReplaced">—</dd>
+    </dl>
+    <p class="hint" id="statsExtra"></p>
+  </section>
+
+  <!-- ============ ステータス行 ============ -->
+  <div class="statusbar">
+    <span class="dot" id="statusDot"></span>
+    <span class="status-text" id="statusText">起動中…</span>
+    <span class="hint" id="statusPort">:8787</span>
+  </div>
+
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>
