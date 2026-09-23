@@ -25,7 +25,7 @@ on:
       - 'desktop/**'
       - 'jp_pii_mask/**'
       - 'scripts/**'
-      - 'setup_and_build.*'
+      - 'インストーラを作る.*'
       - '.github/workflows/**'
 
 # tauri-action がリリースを作成するために必要。
@@ -89,14 +89,12 @@ jobs:
       #    インストーラは作らず、ここまでで止まる (最初の関門)。
       #    サイドカーはこの時点で Tauri の期待する場所に配置される。
       # ----------------------------------------------------------------
-      - name: セットアップと型検査 (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: bash setup_and_build.sh --check-only
-
-      - name: セットアップと型検査 (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: ./setup_and_build.ps1 -CheckOnly
+      - name: アプリを組み立てられるか確認
+        shell: bash
+        run: |
+          PY=python
+          command -v python >/dev/null 2>&1 || PY=python3
+          "$PY" desktop/scripts/build-installer.py --check-only
 
       # ----------------------------------------------------------------
       # 4) GUI をビルドしてインストーラを作る

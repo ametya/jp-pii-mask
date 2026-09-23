@@ -317,18 +317,22 @@ macOS のメニューバー / Windows のタスクトレイに常駐し、ワン
  └─ 終了
 ```
 
-### インストーラを作る（1 コマンド）
+### インストーラを作る
 
-Rust の導入からインストーラ作成まで、すべて自動で行います。
+リポジトリにある次のファイルを**ダブルクリックするだけ**です。
+Rust（組み立ての道具）の導入からインストーラの作成まで、すべて自動で行います。
 
-```powershell
-# Windows（リポジトリのルートで実行）
-.\setup_and_build.ps1
-```
+| お使いのパソコン | ダブルクリックするファイル |
+| --- | --- |
+| Windows | `インストーラを作る.bat` |
+| macOS | `インストーラを作る.command` |
+
+コマンドで実行したい場合（上級者向け）:
 
 ```bash
-# macOS / Linux（リポジトリのルートで実行）
-bash setup_and_build.sh
+python desktop/scripts/build-installer.py                # アプリとインストーラを作る
+python desktop/scripts/build-installer.py --check-only    # 組み立てられるかだけ確認
+python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバーを作り直さない
 ```
 
 できあがるもの:
@@ -372,6 +376,7 @@ bash setup_and_build.sh
 | インストーラ生成（`.msi` / `.exe`） | **PASS**（36.5 MB / 35.9 MB を実際に生成） |
 | サイドカーの同梱（`externalBin`） | **PASS**（.msi を展開し、サイドカーが入っていることを確認） |
 | 同梱サイドカーの起動と応答 | **PASS**（展開した .exe を起動し `/healthz` 200 を確認） |
+| かんたんな入口（ダブルクリックの `.bat`）での実行 | **PASS**（実実行して確認。起動中アプリも検出して案内する） |
 | GUI を実際に操作しての確認（トレイ・ウィンドウ） | **未検証**（目視確認が必要） |
 
 ### 検証中に見つけて直した実際の不具合
@@ -407,15 +412,11 @@ python -m ruff check .       # Lint
 python scripts/e2e_live.py   # 実プロセスでの疎通確認
 ```
 
-デスクトップアプリのビルド（Rust が必要）:
+デスクトップアプリを組み立てる（Rust が必要）:
 
 ```bash
-bash setup_and_build.sh          # macOS / Linux
-```
-
-```powershell
-.\setup_and_build.ps1            # Windows
-.\setup_and_build.ps1 -CheckOnly  # 型検査まで（GUI がビルドできるかの確認）
+python desktop/scripts/build-installer.py --check-only   # 組み立てられるか確認
+python desktop/scripts/build-installer.py                # インストーラまで作る
 ```
 
 ---
@@ -467,12 +468,11 @@ python -m pytest -q                    # テスト
 python -m ruff check .                 # Lint
 python scripts/e2e_live.py             # 疎通確認
 
-# サイドカーの単一バイナリ化（Tauri の探す場所に配置される）
+# アプリに内蔵するサーバーの単一バイナリ化（Tauri の探す場所に配置される）
 python desktop/scripts/build-sidecar.py
 
-# GUI のビルドとインストーラ作成（Rust が必要）
-bash setup_and_build.sh                # macOS / Linux
-.\setup_and_build.ps1                  # Windows
+# アプリとインストーラの作成（Rust が必要）
+python desktop/scripts/build-installer.py
 ```
 ```
 

@@ -21,7 +21,8 @@ Rust ツールチェーンを導入し、**Tauri 側を実際にビルドしま�
 | サイドカーが同梱されること (`externalBin`) | **PASS** | .msi を `msiexec /a` で実際に展開し、`jp-pii-mask-server.exe` (34.79 MB) が `jp-pii-mask-desktop.exe` と並んで入っていることを確認 |
 | 同梱サイドカーが起動して応答すること | **PASS** | 展開後の .exe を実際に起動。`/healthz` が `200 {"status":"ok"}`、`/admin/api/state` が JSON を返す |
 | 同梱サイドカーを孤児なく停止できること | **PASS** | `taskkill /PID <pid> /T /F` で停止。停止後にポート解放と孤児なしを確認 |
-| セットアップスクリプトが最後まで通ること | **PASS** | `setup_and_build.ps1` を実実行し、インストーラ生成まで exit 0 |
+| かんたんな入口（ダブルクリック）が動くこと | **PASS** | `インストーラを作る.bat --check-only` を実実行。道具の確認 → 内蔵サーバーの準備 → プログラムの確認まで exit 0 |
+| 起動中アプリを検出して先に止まること | **PASS** | アプリが実行ファイルを掴んだ状態で実行し、リンカのせいにせず「アプリを閉じて」と案内して停止することを確認 |
 
 **この節の結果は推測ではありません。実際に実行したコマンドの出力です。**
 
@@ -217,6 +218,28 @@ python scripts/e2e_live.py --exe desktop/src-tauri/binaries/jp-pii-mask-server-x
 > 実際にコンパイルした結果、**推測で書いた API 2 箇所が間違っており、
 > 他は正しくコンパイルできました**。コンパイル検証は推測を実測に変えます。
 
+### 0.3 入口を「ダブルクリック 1 つ」にした理由と、消した不具合
+
+以前は入口が 4 つあり（`setup_and_build.ps1` / `.sh` / `desktop/build-installer.ps1` /
+Python 3 本）、非エンジニアには「どれを開けばいいのか」「ビルドとは何か」が
+分かりませんでした。今は **ダブルクリックするファイルが 1 つ**（OS 別に 1 つずつ）です。
+
+| 旧 | 新 |
+| --- | --- |
+| `setup_and_build.ps1` / `setup_and_build.sh` | 廃止（Python 側に統合） |
+| `desktop/build-installer.ps1` | 廃止（同上） |
+| — | `インストーラを作る.bat`（Windows）を追加 |
+| — | `インストーラを作る.command`（macOS）を追加 |
+
+**廃止した `setup_and_build.ps1` には実際に不具合がありました。**
+`$ErrorActionPreference = 'Stop'` のままネイティブコマンドを呼ぶと、
+PyInstaller が進捗を stderr に書くだけで `NativeCommandError` になり、
+内蔵サーバーの準備で中断していました。
+
+> この失敗は **出力をキャプチャする実行**（本検証環境、CI 相当）で再現し、
+> 通常のターミナルでは再現しませんでした。
+> どちらでも確実に動かすため、入口を Python に一本化して PowerShell 依存を無くしました。
+
 ### 1.3 フロントエンドの不確実性（`src/main.js`）
 
 - [ ] `window.__TAURI__` が `withGlobalTauri: true` で実際に生えるか
@@ -282,20 +305,23 @@ python3 --version     # Windows は py -3.12 --version
 `rustc` / `cargo` が無ければ https://rustup.rs/ から導入してください。
 （または `python desktop/scripts/setup-rust.py`）
 
-### ステップ B — セットアップとビルド（1 コマンド）
+### ステップ B — セットアップと作成（入口は 1 つ）
+
+リポジトリのルートにある次のファイルをダブルクリックします。
+
+| OS | ダブルクリックするファイル |
+| --- | --- |
+| Windows | `インストーラを作る.bat` |
+| macOS | `インストーラを作る.command` |
+
+ターミナルから実行する場合:
 
 ```bash
-# macOS / Linux
-bash setup_and_build.sh
+python desktop/scripts/build-installer.py
 ```
 
-```powershell
-# Windows（リポジトリのルートで実行）
-.\setup_and_build.ps1
-```
-
-このスクリプトが、Rust の導入 → サイドカーのビルド → 型検査 →
-インストーラ作成までを順に行います。
+これ 1 つが、Rust の導入 → 内蔵サーバーの準備 → プログラムの確認 →
+インストーラの作成までを順に行います。
 
 確認: サイドカーが Tauri の探す場所にできていること。
 

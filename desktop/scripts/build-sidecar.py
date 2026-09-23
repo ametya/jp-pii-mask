@@ -39,6 +39,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# このスクリプトと同じディレクトリの共通ヘルパを読む。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _toolchain import resolve, which
+
 
 def _make_streams_robust() -> None:
     """標準出力・標準エラーを「落ちない」設定にする。
@@ -89,7 +93,7 @@ def detect_target_triple() -> tuple[str, bool]:
     rustc があればそれを正とする (これが唯一確実な方法)。
     無い場合はプラットフォームから推定し、呼び出し側で警告する。
     """
-    rustc = shutil.which("rustc")
+    rustc = which("rustc")
     if rustc:
         try:
             out = subprocess.run(
@@ -115,7 +119,13 @@ def detect_target_triple() -> tuple[str, bool]:
 
 
 def run(cmd: list[str], **kwargs) -> None:
-    """コマンドを実行し、失敗したら例外にする。出力はそのまま流す。"""
+    """コマンドを実行し、失敗したら例外にする。出力はそのまま流す。
+
+    実行ファイルは絶対パスに解決してから渡す。Windows の CreateProcess は
+    親プロセスの PATH で実行ファイルを探すため、PATH を env で渡しても
+    見つからないことがある。
+    """
+    cmd = resolve(cmd)
     print("  $ " + " ".join(cmd), flush=True)
     result = subprocess.run(cmd, check=False, **kwargs)
     if result.returncode != 0:
@@ -241,8 +251,8 @@ def main() -> int:
     print(f"  サイドカー : {target}")
     print()
     print("次の手順:")
-    print("  python desktop/scripts/build-installer.py   # インストーラを作る")
-    print("  または desktop/build-installer.ps1 (Windows)")
+    print("  リポジトリにある「インストーラを作る.bat」(Windows) または")
+    print("  「インストーラを作る.command」(macOS) を開いてください。")
     print("=" * 62)
     return 0
 

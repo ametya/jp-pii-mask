@@ -31,6 +31,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# このスクリプトと同じディレクトリの共通ヘルパを読む。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _toolchain import resolve, which
+
 
 def _make_streams_robust() -> None:
     """標準出力・標準エラーを「落ちない」設定にする。
@@ -60,13 +64,27 @@ def cargo_home_in_path() -> str:
 
 def have(tool: str) -> bool:
     """PATH (および ~/.cargo/bin) に実行ファイルがあるか。"""
-    if shutil.which(tool):
-        return True
-    suffix = ".exe" if os.name == "nt" else ""
-    return (CARGO_BIN_DIR / f"{tool}{suffix}").is_file()
+    return which(tool) is not None
+
+
+def rustc_version() -> str:
+    """`rustc --version` の出力を返す (見つからなければ空文字)。
+
+    絶対パスに解決してから呼ぶ。Windows では env の PATH を見ないため。
+    """
+    rustc = which("rustc")
+    if not rustc:
+        return ""
+    try:
+        return subprocess.run(
+            [rustc, "--version"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+    except OSError:
+        return ""
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None) -> int:
+    cmd = resolve(cmd)
     print("  $ " + " ".join(cmd), flush=True)
     return subprocess.run(cmd, check=False, env=env).returncode
 
@@ -154,12 +172,7 @@ def main() -> int:
     # 1) 既に入っているか
     # ------------------------------------------------------------------
     if have("rustc") and have("cargo"):
-        env = dict(os.environ)
-        env["PATH"] = cargo_home_in_path()
-        ver = subprocess.run(
-            ["rustc", "--version"], capture_output=True, text=True, check=False, env=env
-        ).stdout.strip()
-        print(f"  すでに導入済みです: {ver}")
+        print(f"  すでに導入済みです: {rustc_version()}")
         already = True
     else:
         print("  Rust は未導入です。自動で導入します。")
@@ -176,11 +189,7 @@ def main() -> int:
             return 1
         already = False
 
-    env = dict(os.environ)
-    env["PATH"] = cargo_home_in_path()
-    ver = subprocess.run(
-        ["rustc", "--version"], capture_output=True, text=True, check=False, env=env
-    ).stdout.strip()
+    ver = rustc_version()
     print(f"  rustc: {ver or '(取得できませんでした)'}")
     print()
 
@@ -212,7 +221,8 @@ def main() -> int:
     print("=" * 62)
     print()
     print("次の手順:")
-    print("  python desktop/scripts/build-installer.py")
+    print("  リポジトリにある「インストーラを作る.bat」(Windows) または")
+    print("  「インストーラを作る.command」(macOS) を開いてください。")
     return 0
 
 

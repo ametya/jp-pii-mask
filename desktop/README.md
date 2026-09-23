@@ -21,8 +21,8 @@
 ### 全プラットフォーム共通
 
 - **Rust ツールチェーン**（`rustup` 経由）
-  - https://rustup.rs/ から導入し、`rustc --version` / `cargo --version` が通ることを確認
-  - 本スキャフォールドは **Rust 未導入環境で書かれた**ため、`rustup` の導入自体も未検証です
+  - 導入は自動化されています（`desktop/scripts/setup-rust.py`。ダブルクリック入口から呼ばれます）
+  - 手動で入れる場合: https://rustup.rs/ から導入し、`rustc --version` / `cargo --version` を確認
 - **Node.js は不要**です。フロントエンドは `src/` の素の HTML/JS で、ビルドステップも CDN も
   使いません（オフラインで動作します）。
 - Tauri CLI（どちらか）
@@ -117,16 +117,19 @@ cargo tauri build
 
 ### かんたんな方法（推奨）
 
-ツールチェーンの導入からインストーラ作成まで、1 つのスクリプトで済ませられます。
+リポジトリのルートにある次のファイルを**ダブルクリックするだけ**です。
+道具の導入からインストーラの作成まで自動で進みます。
 
-```powershell
-# Windows（リポジトリのルートで実行）
-.\setup_and_build.ps1
-```
+| OS | ダブルクリックするファイル |
+| --- | --- |
+| Windows | `インストーラを作る.bat` |
+| macOS | `インストーラを作る.command` |
+
+手元のターミナルから実行する場合:
 
 ```bash
-# macOS / Linux（リポジトリのルートで実行）
-bash setup_and_build.sh
+python desktop/scripts/build-installer.py                # アプリとインストーラを作る
+python desktop/scripts/build-installer.py --check-only    # 組み立てられるかだけ確認
 ```
 
 詳細はリポジトリルートの [`README.md`](../README.md) と
@@ -215,20 +218,22 @@ Rust 側は **HTTP 通信を行いません**。`curl` や外部コマンドの�
 desktop/
 ├── README.md                       このファイル
 ├── VERIFY.md                       未検証項目と検証手順
+├── INSTALL.md                      非エンジニア向けの手順
 ├── .gitignore
-├── binaries/
-│   └── README.md                   サイドカーの配置場所と生成コマンド
 ├── scripts/
-│   ├── build-sidecar.ps1           PyInstaller 実行 (Windows)
-│   ├── build-sidecar.sh            PyInstaller 実行 (macOS/Linux)
+│   ├── _toolchain.py               cargo / rustc の解決 (Windows の PATH 罠対策)
+│   ├── setup-rust.py               Rust の導入とリンカ確認
+│   ├── build-sidecar.py            サーバーの単一実行ファイル化と配置
+│   ├── build-installer.py          全体の進行 (ダブルクリック入口から呼ばれる)
 │   └── make-icons.py               プレースホルダアイコン生成
 └── src-tauri/
     ├── build.rs                    tauri-build
     ├── Cargo.toml
     ├── tauri.conf.json
     ├── capabilities/default.json
+    ├── binaries/                   同梱するサーバー (自動生成・git 管理外)
     ├── icons/                      プレースホルダ (tauri icon で置換推奨)
-    └── src/main.rs                 トレイ + サイドカー起動 + コマンド
+    └── src/main.rs                 トレイ + サーバー起動 + コマンド
 └── src/
     ├── index.html                  設定ウィンドウ (日本語 UI / インライン CSS)
     └── main.js                     状態ポーリング + トグル処理
