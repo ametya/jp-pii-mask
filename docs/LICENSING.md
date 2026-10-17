@@ -44,6 +44,14 @@
 > **注意:** GiNZA が参照するモデルによっては、別途ライセンス条項を持つ場合があります。
 > 同梱・配布する場合は各モデルのライセンスを個別に確認してください。
 
+### PDF・画像ファイルのマスク
+
+| パッケージ | ライセンス | 商用可 |
+|---|---|---|
+| [Pillow](https://github.com/python-pillow/Pillow) | MIT-CMU (HPND) | ✅ |
+| [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | BSD-3-Clause / Apache-2.0（PDFium 本体は BSD-3-Clause） | ✅ |
+| [winsdk](https://github.com/pywinrt/pywinrt) | MIT | ✅ |
+
 ### 開発時のみ
 
 | パッケージ | ライセンス | 商用可 |

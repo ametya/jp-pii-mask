@@ -6,6 +6,8 @@
     jp-pii-mask detect "テキスト"          # 検出だけ試す
     jp-pii-mask mask "テキスト"            # マスク結果を表示
     jp-pii-mask demo                       # マスク→復元の往復を実演
+    jp-pii-mask file mask 請求書.pdf       # PDF・画像をローカルでマスク
+    jp-pii-mask file restore 回答.txt --vault 請求書.masked.vault
     jp-pii-mask config --show              # 現在の設定を表示
 """
 
@@ -15,6 +17,7 @@ import argparse
 import contextlib
 import json
 import sys
+from pathlib import Path
 
 from .config import UPSTREAM_PRESETS, ConfigStore
 from .detect import Detector
@@ -148,6 +151,93 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
+def _cmd_file_mask(args: argparse.Namespace) -> int:
+    from .files import FileMaskError, mask_file, mask_result_summary, output_path_for
+
+    store = ConfigStore(args.config)
+    cfg = store.config
+    min_confidence = (
+        args.min_confidence if args.min_confidence is not None else cfg.min_confidence
+    )
+    detector = Detector(
+        use_ner=args.ner or cfg.use_ner,
+        min_confidence=min_confidence,
+        enabled_types=cfg.enabled_types or None,
+    )
+    terms = list(cfg.custom_terms) + list(args.term or [])
+
+    src = Path(args.input)
+    out = output_path_for(src, args.out)
+    vault = Vault(
+        store_path=None if args.no_vault else out.with_suffix(".vault"),
+        encrypt=True,
+    )
+
+    try:
+        result = mask_file(
+            src,
+            out,
+            detector=detector,
+            vault=vault,
+            dpi=args.dpi,
+            ocr=args.ocr,
+            write_text=not args.no_text,
+            custom_terms=terms,
+        )
+    except FileMaskError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"マスクしました: {result.input_path}")
+    print(mask_result_summary(result))
+    if result.entities == 0:
+        print("\n  ヒント: 検出されない場合は --ocr on や --min-confidence の引き下げ、")
+        print("          --term による社内固有語の指定を試してください。")
+    return 0
+
+
+def _cmd_file_restore(args: argparse.Namespace) -> int:
+    from .files import FileMaskError, restore_file
+
+    try:
+        result = restore_file(args.input, args.vault, args.out)
+    except FileMaskError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "restored": result.restored,
+                    "missing": len(result.missing),
+                    "missing_items": result.missing[:20],
+                    "text": None if args.out else result.text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    elif args.out:
+        print(
+            f"復元しました: {args.out} "
+            f"(復元 {result.restored} 件 / 未復元 {len(result.missing)} 件)"
+        )
+    else:
+        print(result.text, end="" if result.text.endswith("\n") else "\n")
+    if result.missing:
+        print(
+            f"警告: 復元できなかったプレースホルダが {len(result.missing)} 件あります: "
+            f"{', '.join(result.missing[:5])}",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     store = ConfigStore(args.config)
     cfg = store.config
@@ -228,6 +318,34 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--show", action="store_true")
     c.add_argument("--set", action="append", help="key=value 形式 (複数指定可)")
     c.set_defaults(func=_cmd_config)
+
+    f = sub.add_parser("file", help="PDF・画像ファイルの個人情報をローカルでマスクする")
+    fsub = f.add_subparsers(dest="file_command", required=True)
+
+    fm = fsub.add_parser("mask", help="PDF・画像をマスクして保存する")
+    fm.add_argument("input", help="入力ファイル (PDF / PNG / JPEG / BMP / WebP / TIFF)")
+    fm.add_argument("-o", "--out", default=None, help="出力パス (既定: <name>.masked.<ext>)")
+    fm.add_argument("--dpi", type=int, default=200, help="ページ画像化と OCR の解像度 (72〜600)")
+    fm.add_argument(
+        "--ocr",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="スキャンページ・画像の文字認識 (auto: テキスト層が無いときだけ)",
+    )
+    fm.add_argument("--min-confidence", type=float, default=None, help="検出の信頼度しきい値")
+    fm.add_argument("--ner", action="store_true", help="NER (GiNZA) を使う")
+    fm.add_argument("--term", action="append", default=[], help="追加で必ずマスクする語")
+    fm.add_argument("--no-text", action="store_true", help="プレースホルダ入りテキストを出力しない")
+    fm.add_argument("--no-vault", action="store_true", help="対応表 (復元用) を保存しない")
+    fm.add_argument("--json", action="store_true", help="結果を JSON で出力する")
+    fm.set_defaults(func=_cmd_file_mask)
+
+    fr = fsub.add_parser("restore", help="マスク済みテキストを対応表で復元する")
+    fr.add_argument("input", help="マスク済みテキスト (<name>.masked.txt)")
+    fr.add_argument("--vault", required=True, help="対応表 (<name>.masked.vault)")
+    fr.add_argument("-o", "--out", default=None, help="復元結果の書き出し先 (省略時は標準出力)")
+    fr.add_argument("--json", action="store_true", help="結果を JSON で出力する")
+    fr.set_defaults(func=_cmd_file_restore)
 
     return p
 

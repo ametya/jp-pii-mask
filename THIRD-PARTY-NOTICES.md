@@ -70,6 +70,28 @@
 
 ---
 
+## 任意依存（PDF・画像ファイルのマスク）
+
+### Pillow
+- License: MIT-CMU (HPND)
+- Source: https://github.com/python-pillow/Pillow
+- Copyright (c) 2010 by Jeffrey A. Clark and contributors
+
+### pypdfium2
+- License: BSD-3-Clause / Apache-2.0（同梱の PDFium 本体は BSD-3-Clause）
+- Source: https://github.com/pypdfium2-team/pypdfium2
+- Copyright (c) pypdfium2 team, PDFium authors
+
+### winsdk（Windows 標準 OCR の Python バインディング）
+- License: MIT
+- Source: https://github.com/pywinrt/pywinrt
+- Copyright (c) PyWinRT contributors
+
+> `winsdk` は OS 内蔵の Windows.Media.Ocr を呼び出すだけで、
+> 認識処理を外部サービスへ送信しません。
+
+---
+
 ## デスクトップ GUI（`desktop/`）
 
 ### Tauri

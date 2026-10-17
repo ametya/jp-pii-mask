@@ -47,11 +47,23 @@ tokenizer = [
   "sudachipy>=0.6.8",
   "sudachidict_core>=20240409",
 ]
+# PDF・画像ファイルのローカルマスク (file サブコマンド)。未導入なら使えないだけ。
+file = [
+  "pypdfium2>=4.30",
+  "Pillow>=10.0",
+]
+# 画像・スキャン PDF の文字認識に使う Windows 標準 OCR。任意。
+ocr-win = [
+  "winsdk>=1.0.0b10; sys_platform == 'win32'",
+]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "ruff>=0.4",
   "pyinstaller>=6.6",
+  "pypdfium2>=4.30",
+  "Pillow>=10.0",
+  "winsdk>=1.0.0b10; sys_platform == 'win32'",
 ]
 
 [project.scripts]

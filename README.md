@@ -22,6 +22,7 @@
 - [なぜ必要か](#なぜ必要か)
 - [主な特徴](#主な特徴)
 - [クイックスタート](#クイックスタート)
+- [PDF・画像ファイルのマスク](#pdf画像ファイルのマスク)
 - [AI アプリへの接続設定](#ai-アプリへの接続設定)
 - [検出できる個人情報](#検出できる個人情報)
 - [動作の仕組み](#動作の仕組み)
@@ -62,7 +63,9 @@ ChatGPT や Claude に業務文書を貼り付けるとき、こんな情報が�
 - **ストリーミング対応** — ChatGPT / Claude の逐次応答でも、
   プレースホルダが途中で分割されても壊れずに復元します。
 - **ローカル完結** — 検出も復元もあなたの PC 上で完結。原文を外部に送りません。
-- **監査しやすい** — 依存は 5 つだけ。Vault（対応表）は AES-GCM で暗号化して保存。
+- **PDF・画像ファイルも** — スキャンした請求書や写真も、黒塗りした本体と
+  復元用テキストをローカルで出力します（任意機能。OCR は Windows 標準を使用）。
+- **監査しやすい** — 中核の依存は 5 つだけ。Vault（対応表）は AES-GCM で暗号化して保存。
 - **OpenAI / Anthropic 互換** — ほぼ全ての LLM ツールがそのまま使えます。
 
 ---
@@ -136,6 +139,49 @@ jp-pii-mask demo
 > このデモのマイナンバー `123456789018` と法人番号 `3234567890123` は
 > **検査用数字が正しい値**です。検査用数字の合わない 13 桁
 > （`1234567890123` など）は法人番号として検出されません。
+
+---
+
+## PDF・画像ファイルのマスク
+
+プロキシを通さず、**手元のファイルを直接**伏せ字にしたいときは `file` サブコマンドを使います。
+
+```bash
+python -m pip install -e ".[file]"          # PDF・画像対応 (Pillow + pypdfium2)
+python -m pip install -e ".[ocr-win]"       # スキャン PDF・写真の文字認識 (Windows のみ)
+
+jp-pii-mask file mask 請求書.pdf
+```
+
+```
+マスクしました: 請求書.pdf
+  出力ファイル : 請求書.masked.pdf
+  テキスト     : 請求書.masked.txt
+  対応表       : 請求書.masked.vault (restore に使用)
+  ページ       : 2 (マスク 1 / OCR 0)
+  検出         : 7 件 {'ORGANIZATION': 1, 'PERSON': 1, 'PHONE': 1, ...}
+```
+
+| 出力 | 中身 |
+|---|---|
+| `請求書.masked.pdf` | 個人情報を黒塗りした本体。**見た目は戻せません** |
+| `請求書.masked.txt` | プレースホルダ入りのテキスト。AI にはこちらを渡します |
+| `請求書.masked.vault` | 復元用の対応表（AES-GCM で暗号化） |
+
+AI に `.masked.txt` を渡し、返ってきた文章に `[電話番号_1]` が現れたら、
+対応表でいつでも元の文字列に戻せます。
+
+```bash
+jp-pii-mask file restore 回答.txt --vault 請求書.masked.vault
+```
+
+- 画像（PNG / JPEG / BMP / WebP / TIFF）と PDF に対応
+- **個人情報が無いページはベクタのまま**複製されるため、画質は劣化しません
+- 個人情報があったページだけ画像化し、**テキスト層を除去**します
+- `--ocr auto`（既定）は、テキスト層が無い（＝スキャンの）ページだけ OCR します
+- OCR は Windows 標準 OCR（OS 内蔵）を使うため、クラウドへの送信はありません
+- 注意: **マスク済みファイル（PDF・画像）自体は復元できません**。
+  復元できるのは `.masked.txt` のテキストだけです
 
 ---
 
@@ -363,9 +409,11 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 
 | 対象 | 結果 |
 |---|---|
-| 自動テスト | **150 passed / 1 skipped**（`python -m pytest`） |
+| 自動テスト | **174 passed / 1 skipped**（`python -m pytest`） |
 | Lint（ruff） | **All checks passed** |
 | 疎通確認（実プロセス・実 HTTP） | **22/22 PASS**（`python scripts/e2e_live.py`） |
+| ファイルマスクの実通し確認（PDF・スキャン PDF・画像） | **34/34 PASS**（`python scripts/e2e_files.py`。実 OCR と黒塗り画素まで検証） |
+| 回転ページ付き PDF（`/Rotate` 90/180/270）の黒塗り位置 | **PASS**（画素の突き合わせで検証、`tests/test_files.py`） |
 | 単一実行ファイル化（PyInstaller） | **成功**（34.8 MB、起動と API 応答を実測） |
 | 上記実行ファイルでの疎通確認 | **22/22 PASS**（`--exe` で検証） |
 | マスク → 送信 → 復元 | PASS（上流に原文が届かないことを実測） |
@@ -403,6 +451,11 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 7. **推測で書いた Tauri API 2 箇所が実際に間違っていた** — `TrayIcon` に
    `set_checked` / `menu()` は存在せず、`CheckMenuItem` を自分で保持する
    必要がありました。`cargo check` が検出し、実 API に合わせて修正。
+8. **回転ページで黒塗りが別の場所に描かれる** — PDF の文字座標は左下原点の
+   ため単純に上下反転していましたが、`/Rotate` 付きページは描画時に回転される
+   ため、90/180/270 度で黒塗りの位置がずれていました（テキスト層は消えるのに
+   黒塗りは空を塗る状態）。文字座標と描画画素の突き合わせで変換式を確定し、
+   回転角ごとの回帰テストを追加しました。
 
 ### 自分で確かめる
 
@@ -410,6 +463,7 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 python -m pytest -q          # 単体・結合テスト
 python -m ruff check .       # Lint
 python scripts/e2e_live.py   # 実プロセスでの疎通確認
+python scripts/e2e_files.py  # PDF・画像の実通し確認（OCR は Windows のみ）
 ```
 
 デスクトップアプリを組み立てる（Rust が必要）:
@@ -431,7 +485,13 @@ python desktop/scripts/build-installer.py                # インストーラま
 - **NER は任意** — GiNZA 未導入時はルールベースのみ。人名・法人名の再現率は
   辞書依存で、未知の姓や難読名は取りこぼす可能性があります
 - **ひらがなのみの人名** — 敬称が付かない場合は検出しません（誤検出との trade-off）
-- **`multipart/form-data` とバイナリ** — マスクせず素通しします（画像・PDF の送信など）
+- **プロキシ経由の画像・PDF** — チャットへの添付など `multipart/form-data` は
+  今もマスクせず素通しします。手元のファイルは `jp-pii-mask file mask` で
+  ローカル処理してください
+- **マスク済みファイルは不可逆** — `file mask` が出力する PDF・画像から元の
+  見た目には戻せません（戻せるのは `.masked.txt` のテキストだけです）
+- **スキャンの OCR 精度** — 傾き・かすれ・手書きは読み取りを外すことがあります。
+  処理後は黒塗り結果を必ず目視確認してください（縦書き・段組みは未検証）
 - **完全な保証ではない** — 「検出漏れゼロ」を保証するものではありません。
   機密性の高い用途では `redact_only` や送信前の目視確認を併用してください
 - **復元はプレースホルダの再出現に依存** — モデルがプレースホルダを大きく書き換えた
@@ -453,6 +513,8 @@ python desktop/scripts/build-installer.py                # インストーラま
 | HTTP | httpx | BSD |
 | スキーマ | pydantic | MIT |
 | 精度向上（任意） | spaCy / GiNZA | MIT |
+| PDF・画像の処理（任意） | Pillow / pypdfium2 | MIT-CMU (HPND) / BSD-3-Clause・Apache-2.0 |
+| Windows OCR（任意） | winsdk | MIT |
 
 商用化に向けた検討事項（価格設計、配布、法務、ロードマップ）は
 [`docs/COMMERCIALIZATION.md`](docs/COMMERCIALIZATION.md) にまとめています。
@@ -467,13 +529,13 @@ python -m pip install -e ".[dev]"
 python -m pytest -q                    # テスト
 python -m ruff check .                 # Lint
 python scripts/e2e_live.py             # 疎通確認
+python scripts/e2e_files.py            # PDF・画像の実通し確認（OCR は Windows のみ）
 
 # アプリに内蔵するサーバーの単一バイナリ化（Tauri の探す場所に配置される）
 python desktop/scripts/build-sidecar.py
 
 # アプリとインストーラの作成（Rust が必要）
 python desktop/scripts/build-installer.py
-```
 ```
 
 ### ディレクトリ構成
@@ -485,6 +547,8 @@ jp_pii_mask/
   words.py        日本語の語彙資源（姓・法人格・文脈語）
   masking.py      マスク／復元の本体、ストリーミング復元器
   vault.py        可逆対応表（暗号化保存・セッション分離）
+  files.py        PDF・画像ファイルのマスク／復元（ローカルファイル向け）
+  ocr.py          Windows 標準 OCR のラッパー（任意依存）
   proxy.py        OpenAI / Anthropic 互換プロキシ
   config.py       設定
   webui.py        制御パネル（単一 HTML）
@@ -503,7 +567,9 @@ docs/             設計・ライセンス・商用化の検討資料
 - [x] 可逆マスキング（Vault・暗号化・セッション分離）
 - [x] OpenAI / Anthropic 互換プロキシ（ストリーミング対応）
 - [x] 制御パネル
-- [x] テスト（132 件）と実プロセス疎通確認
+- [x] テスト（174 件）と実プロセス・実ファイル疎通確認
+- [x] PDF・画像ファイルのローカルマスキング（Windows OCR 対応）
+- [ ] 縦書き・段組み文書のファイルマスク検証
 - [ ] デスクトップ GUI のビルド検証（Rust 環境が必要）
 - [ ] 署名済みインストーラ（macOS notarization / Windows コード署名）
 - [ ] NER の既定同梱と精度評価セット
