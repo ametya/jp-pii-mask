@@ -126,8 +126,9 @@ python desktop/scripts/build-installer.py --skip-sidecar
 
 4. 設定画面の大きなスイッチで **マスキング保護を ON** にします
 
-5. AI を使うアプリ（Cursor、自作スクリプトなど）の接続先を
-   `http://127.0.0.1:8787/v1` に変更します
+5. AI を使うアプリの接続先を変更します
+   - Claude など Anthropic 系のアプリ: `http://127.0.0.1:8787`
+   - Cursor など OpenAI 互換のアプリ: `http://127.0.0.1:8787/v1`
 
 これで、AI に送られる文章から個人情報が自動的に隠され、
 AI からの返事では元の文章に戻ります。
