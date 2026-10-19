@@ -1,0 +1,81 @@
+name: test
+
+# 変更のたびに「壊れていないか」「精度が落ちていないか」を自動で確認する。
+#
+# 内容:
+#   1. test (Windows): ruff → pytest → 検出精度の下限チェック →
+#      プロキシの疎通 (e2e_live。偽の上流 API を立てて実 HTTP で確認)
+#   2. security (Linux): 依存の脆弱性スキャン (pip-audit) と
+#      SBOM (pip freeze) の保存
+#
+# メモ:
+#   - OCR (Windows 標準) は GitHub のランナーに日本語パックが無いため
+#     OCR テストは自動的に skip される (ローカルでは実行される)。
+#   - 精度チェックは eval/ (人手でラベル付けしたコーパス) と
+#     scripts/eval_detection.py が基準。しきい値を下回ると失敗する。
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: テスト (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@v4
+
+      - name: Python をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 依存をインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 静的検査 (ruff)
+        run: python -m ruff check .
+
+      - name: テスト (pytest)
+        run: python -m pytest -q
+
+      - name: 検出精度の下限チェック (eval コーパス)
+        run: python scripts/eval_detection.py --check
+
+      - name: プロキシの疎通 (e2e_live)
+        run: python scripts/e2e_live.py
+
+  security:
+    name: 依存の脆弱性・SBOM (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@v4
+
+      - name: Python をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 依存をインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" pip-audit
+
+      - name: 脆弱性スキャン (pip-audit)
+        run: python -m pip_audit --skip-editable
+
+      - name: SBOM を保存 (pip freeze)
+        run: python -m pip freeze > sbom-requirements.txt
+
+      - name: SBOM を成果物として保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-requirements
+          retention-days: 30
+          path: sbom-requirements.txt

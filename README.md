@@ -66,6 +66,8 @@ ChatGPT や Claude に業務文書を貼り付けるとき、こんな情報が�
 - **PDF・画像ファイルも** — スキャンした請求書や写真も、黒塗りした本体と
   復元用テキストをローカルで出力します（任意機能。OCR は Windows 標準を使用）。
 - **監査しやすい** — 中核の依存は 5 つだけ。Vault（対応表）は AES-GCM で暗号化して保存。
+- **操作の記録（任意）** — 「いつ・何件・どの種別をマスクしたか」を JSONL で残せます。
+  原文・検出値・ファイル名は記録しません（`audit_log=true` で有効化）。
 - **OpenAI / Anthropic 互換** — ほぼ全ての LLM ツールがそのまま使えます。
 
 ---
@@ -303,6 +305,7 @@ jp-pii-mask detect "田中太郎の携帯は090-1234-5678です。"
 jp-pii-mask mask   "田中太郎です。" --json
 jp-pii-mask config --show
 jp-pii-mask config --set enabled=true --set min_confidence=0.6
+jp-pii-mask audit --last 20       # 監査ログの表示（audit_log=true のとき）
 ```
 
 ### 主な設定項目
@@ -322,6 +325,7 @@ jp-pii-mask config --set enabled=true --set min_confidence=0.6
 | `redact_only` | `false` | `true` なら復元せず完全消去 |
 | `vault_encrypt` | `true` | 対応表を暗号化して保存 |
 | `vault_ttl_hours` | `24` | セッションの保持時間 |
+| `audit_log` | `false` | 操作の監査ログ（JSONL）を記録する（原文は記録しない） |
 
 ### 管理 API
 
@@ -335,10 +339,33 @@ jp-pii-mask config --set enabled=true --set min_confidence=0.6
 | `POST` | `/admin/api/toggle` | ON/OFF 切り替え |
 | `GET` | `/admin/api/detect?text=…` | 検出プレビュー（マスクしない） |
 | `GET` | `/admin/api/mapping` | 現在の対応表（ローカル限定） |
+| `GET` | `/admin/api/audit?limit=…` | 監査ログの末尾 N 件（原文は含まない） |
 
 > **安全性:** `Origin` ヘッダが付いた要求はローカル系オリジン
 > （`localhost` / `127.0.0.1` / `tauri.localhost`）以外すべて拒否します。
-> 悪意ある Web サイトが管理 API を読んで原文を抜き取ることを防ぐためです。
+> さらに `127.0.0.1` に bind している間は `Host` ヘッダも検証し、
+> 未知のホスト名からのアクセスを 403 で拒否します
+> （悪意あるサイトが DNS を 127.0.0.1 に向ける DNS リバインディング対策）。
+
+### 監査ログ
+
+`audit_log=true` にすると、操作の記録を JSONL で残します（既定 OFF）。
+
+```bash
+jp-pii-mask config --set audit_log=true
+jp-pii-mask audit --last 20          # 表示（--json で機械可読）
+```
+
+```
+2026-10-20 09:12:03  proxy.mask    session=3f9c1a2b7d04 count=3 types=PERSON,PHONE,EMAIL
+2026-10-20 09:12:05  proxy.restore session=3f9c1a2b7d04 restored=3 misses=0
+2026-10-20 09:15:41  file.mask     kind=pdf pages=2 entities=7
+```
+
+- 記録する: 時刻、操作種別、セッションの **ハッシュ（先頭 12 桁）**、件数、種別名
+- 記録しない: **原文・検出値・ファイルパス・ファイル名**（漏洩経路を作らない）
+- 保存先: 設定ディレクトリ（`~/.jp-pii-mask/audit.log`）。1 MB でローテーション
+- ファイル処理（`file mask`）も同じ設定に従います
 
 ### より高精度にしたい場合（任意）
 
@@ -409,13 +436,15 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 
 | 対象 | 結果 |
 |---|---|
-| 自動テスト | **174 passed / 1 skipped**（`python -m pytest`） |
+| 自動テスト | **211 passed / 1 skipped**（`python -m pytest`） |
 | Lint（ruff） | **All checks passed** |
-| 疎通確認（実プロセス・実 HTTP） | **22/22 PASS**（`python scripts/e2e_live.py`） |
-| ファイルマスクの実通し確認（PDF・スキャン PDF・画像） | **34/34 PASS**（`python scripts/e2e_files.py`。実 OCR と黒塗り画素まで検証） |
+| 検出精度（評価コーパス） | **再現率 100% / 適合率 100%**（19 文書・75 ラベル。`python scripts/eval_detection.py`） |
+| 疎通確認（実プロセス・実 HTTP） | **26/26 PASS**（`python scripts/e2e_live.py`） |
+| ファイルマスクの実通し確認（PDF・スキャン PDF・画像） | **37/37 PASS**（`python scripts/e2e_files.py`。実 OCR と黒塗り画素まで検証） |
+| CI（GitHub Actions） | **ruff / pytest / 精度の下限チェック / 疎通 / 依存の脆弱性スキャン**（`.github/workflows/test.yml`） |
 | 回転ページ付き PDF（`/Rotate` 90/180/270）の黒塗り位置 | **PASS**（画素の突き合わせで検証、`tests/test_files.py`） |
-| 単一実行ファイル化（PyInstaller） | **成功**（34.8 MB、起動と API 応答を実測） |
-| 上記実行ファイルでの疎通確認 | **22/22 PASS**（`--exe` で検証） |
+| 単一実行ファイル化（PyInstaller） | **成功**（50.4 MB、起動と API 応答を実測） |
+| 上記実行ファイルでの疎通確認 | **26/26 PASS**（`--exe` で検証） |
 | マスク → 送信 → 復元 | PASS（上流に原文が届かないことを実測） |
 | ストリーミング逐次復元 | PASS（チャンク分割耐性を含む） |
 | Vault 暗号化 | PASS（保存ファイルに原文が平文で現れないことを検証） |
@@ -456,14 +485,22 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
    ため、90/180/270 度で黒塗りの位置がずれていました（テキスト層は消えるのに
    黒塗りは空を塗る状態）。文字座標と描画画素の突き合わせで変換式を確定し、
    回転角ごとの回帰テストを追加しました。
+9. **検出器の境界バグ 5 件** — 精度を定量化するため評価コーパス（19 文書・
+   75 ラベル）を作って計測したところ、実測 90.7% / 93.2% で不一致が多数。
+   分析の結果、(1) 郵便番号パターンが電話・年金番号の内側に誤ヒット、
+   (2) 電話番号が行末の改行と括弧を飲み込む、(3) スラッシュ区切り日付の
+   パターンが未配線、(4) マイナンバーカード番号が生成されない、
+   (5) 法人名が助詞「の」で人名を飲み込む、を修正し **100% / 100%** に。
+   いずれも回帰テストを追加済みです。
 
 ### 自分で確かめる
 
 ```bash
-python -m pytest -q          # 単体・結合テスト
-python -m ruff check .       # Lint
-python scripts/e2e_live.py   # 実プロセスでの疎通確認
-python scripts/e2e_files.py  # PDF・画像の実通し確認（OCR は Windows のみ）
+python -m pytest -q               # 単体・結合テスト
+python -m ruff check .            # Lint
+python scripts/eval_detection.py  # 検出精度の再計測（種別ごとの再現率・適合率）
+python scripts/e2e_live.py        # 実プロセスでの疎通確認
+python scripts/e2e_files.py       # PDF・画像の実通し確認（OCR は Windows のみ）
 ```
 
 デスクトップアプリを組み立てる（Rust が必要）:
@@ -486,12 +523,16 @@ python desktop/scripts/build-installer.py                # インストーラま
   辞書依存で、未知の姓や難読名は取りこぼす可能性があります
 - **ひらがなのみの人名** — 敬称が付かない場合は検出しません（誤検出との trade-off）
 - **プロキシ経由の画像・PDF** — チャットへの添付など `multipart/form-data` は
-  今もマスクせず素通しします。手元のファイルは `jp-pii-mask file mask` で
-  ローカル処理してください
+  今もマスクせず素通しします（見えていない転送を残さないため、
+  `multipart_passed` として統計と警告ログに記録します）。
+  手元のファイルは `jp-pii-mask file mask` でローカル処理してください
 - **マスク済みファイルは不可逆** — `file mask` が出力する PDF・画像から元の
   見た目には戻せません（戻せるのは `.masked.txt` のテキストだけです）
 - **スキャンの OCR 精度** — 傾き・かすれ・手書きは読み取りを外すことがあります。
-  処理後は黒塗り結果を必ず目視確認してください（縦書き・段組みは未検証）
+  処理後は黒塗り結果を必ず目視確認してください
+- **縦書き（縦組み）は非対応** — Windows 標準 OCR は横書き専用です。
+  実測では縦組みの数字列が判読不能な文字列になり、**黒塗りされずに残ります**。
+  縦書きの文書は現状の `file mask` の対象外と考えてください（段組みは未検証）
 - **完全な保証ではない** — 「検出漏れゼロ」を保証するものではありません。
   機密性の高い用途では `redact_only` や送信前の目視確認を併用してください
 - **復元はプレースホルダの再出現に依存** — モデルがプレースホルダを大きく書き換えた
@@ -528,6 +569,7 @@ python -m pip install -e ".[dev]"
 
 python -m pytest -q                    # テスト
 python -m ruff check .                 # Lint
+python scripts/eval_detection.py       # 検出精度の計測（--check で下限チェック）
 python scripts/e2e_live.py             # 疎通確認
 python scripts/e2e_files.py            # PDF・画像の実通し確認（OCR は Windows のみ）
 
@@ -546,15 +588,17 @@ jp_pii_mask/
   validators.py   検査用数字（マイナンバー / 法人番号 / Luhn / 電話）
   words.py        日本語の語彙資源（姓・法人格・文脈語）
   masking.py      マスク／復元の本体、ストリーミング復元器
-  vault.py        可逆対応表（暗号化保存・セッション分離）
+  vault.py        可逆対応表（暗号化保存・セッション分離・DPAPI 鍵保護）
+  audit.py        監査ログ（JSONL。原文・検出値・ファイル名は記録しない）
   files.py        PDF・画像ファイルのマスク／復元（ローカルファイル向け）
   ocr.py          Windows 標準 OCR のラッパー（任意依存）
   proxy.py        OpenAI / Anthropic 互換プロキシ
   config.py       設定
   webui.py        制御パネル（単一 HTML）
   cli.py          コマンドライン入口
-desktop/          Tauri 2 デスクトップ雛形（未ビルド）
-scripts/          疎通確認・ビルド補助
+eval/             検出精度の評価コーパスと計算（種別ごとの再現率・適合率）
+desktop/          Tauri 2 デスクトップアプリ
+scripts/          疎通確認・精度計測・ビルド補助
 tests/            テストスイート
 docs/             設計・ライセンス・商用化の検討資料
 ```
@@ -567,12 +611,19 @@ docs/             設計・ライセンス・商用化の検討資料
 - [x] 可逆マスキング（Vault・暗号化・セッション分離）
 - [x] OpenAI / Anthropic 互換プロキシ（ストリーミング対応）
 - [x] 制御パネル
-- [x] テスト（174 件）と実プロセス・実ファイル疎通確認
+- [x] テスト（211 件）と実プロセス・実ファイル疎通確認
 - [x] PDF・画像ファイルのローカルマスキング（Windows OCR 対応）
-- [ ] 縦書き・段組み文書のファイルマスク検証
-- [ ] デスクトップ GUI のビルド検証（Rust 環境が必要）
+- [x] 検出精度の評価コーパスと下限チェック（`eval/`、CI で自動計測）
+- [x] ファイル処理の鍵を分離（`file-key.bin` + Windows DPAPI 保護）
+- [x] 監査ログ（操作の記録。原文は含めない）
+- [x] Host ヘッダ検証（DNS リバインディング対策）
+- [x] CI（ruff / pytest / 精度 / 疎通 / 依存の脆弱性スキャン・SBOM）
+- [x] デスクトップ GUI のビルド検証（Rust 環境でビルド・インストーラ生成）
+- [ ] 縦書き文書への対応（Windows OCR は縦書き非対応と実測済み。
+  別 OCR の併用か、行分割の自前実装が必要。段組みも未検証）
 - [ ] 署名済みインストーラ（macOS notarization / Windows コード署名）
-- [ ] NER の既定同梱と精度評価セット
+- [ ] NER の既定同梱
+- [ ] 評価コーパスの拡充（実文書から数百件規模へ）
 - [ ] ブラウザ拡張（Web 版 ChatGPT / Claude への入力フック）
 
 ---

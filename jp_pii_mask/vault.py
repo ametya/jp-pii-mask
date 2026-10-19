@@ -11,8 +11,13 @@
     会話 B の復元に使われると情報漏洩になるため。
   - メモリ上も上限を設ける (LRU 的に古いものを捨てる) ことで、
     長時間稼働時のメモリ肥大を防ぐ。
-  - 復号鍵はユーザーディレクトリに 0600 で置く。OS の権限に依存するが、
-    これが単一ユーザー向けツールとして妥当な線。
+  - 復号鍵は 0600 で保存し、Windows では DPAPI でユーザーアカウントに
+    束縛する。鍵ファイルをコピーしても他ユーザー / 他 PC では使えない。
+  - 鍵の置き場所 (key_path) は呼び出し側が決める。既定は従来互換で
+    対応表の隣だが、ファイルマスクは `file_key_path()` により
+    出力先フォルダから分離したユーザー領域 (= 設定ディレクトリ) に置く。
+    出力物と鍵が同じフォルダにあると、フォルダごと共有・コピーされた
+    時点で暗号化が無意味になるため。
 """
 
 from __future__ import annotations
@@ -32,6 +37,84 @@ from pathlib import Path
 __all__ = ["PLACEHOLDER_RE", "Vault", "VaultEntry"]
 
 log = logging.getLogger("jp_pii_mask.vault")
+
+# DPAPI で保護した鍵ファイルの目印。この接頭辞が無ければ生の鍵として扱う
+# (旧バージョンが作った鍵との互換のため)。
+_DPAPI_MARKER = b"JPPMK1\x00"
+
+
+def _dpapi_transform(data: bytes, *, protect: bool) -> bytes | None:
+    """Windows DPAPI で data を暗号化/復号する。使えない環境では None。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_char)),
+        ]
+
+    try:
+        crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except OSError:
+        return None
+
+    blob_ptr = ctypes.POINTER(DataBlob)
+    crypt32.CryptProtectData.argtypes = [
+        blob_ptr, wintypes.LPCWSTR, blob_ptr, ctypes.c_void_p,
+        ctypes.c_void_p, wintypes.DWORD, blob_ptr,
+    ]
+    # CryptUnprotectData の第 2 引数は説明文の出力先 (未使用なので None)。
+    crypt32.CryptUnprotectData.argtypes = [
+        blob_ptr, ctypes.c_void_p, blob_ptr, ctypes.c_void_p,
+        ctypes.c_void_p, wintypes.DWORD, blob_ptr,
+    ]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    buf = ctypes.create_string_buffer(bytes(data), len(data))
+    blob_in = DataBlob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    blob_out = DataBlob()
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    ok = fn(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
+    )
+    if not ok:
+        return None
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        kernel32.LocalFree(blob_out.pbData)
+
+
+def _read_key_file(path: Path) -> bytes:
+    blob = path.read_bytes()
+    if not blob.startswith(_DPAPI_MARKER):
+        return blob
+    raw = _dpapi_transform(blob[len(_DPAPI_MARKER):], protect=False)
+    if raw is None:
+        raise ValueError(
+            "DPAPI で保護された鍵を復号できませんでした "
+            "(別のユーザー / PC で作られた鍵です)"
+        )
+    return raw
+
+
+def _write_key_file(path: Path, key: bytes) -> None:
+    blob = key
+    if os.name == "nt":
+        protected = _dpapi_transform(key, protect=True)
+        if protected is not None:
+            blob = _DPAPI_MARKER + protected
+    path.write_bytes(blob)
+    with contextlib.suppress(OSError):
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 # プレースホルダの標準形式: [氏名_1]
 #   - 角括弧は LLM がそのまま保持しやすい
@@ -94,6 +177,10 @@ class Vault:
         メモリ保持する最大件数。超過時は古い順に破棄する。
     placeholder_template:
         プレースホルダの書式。
+    key_path:
+        復号鍵の保存先。None なら従来どおり store_path の隣の
+        `key.bin` を使う (後方互換)。呼び出し側が明示すると
+        出力先フォルダから鍵を分離できる。
     """
 
     def __init__(
@@ -103,11 +190,13 @@ class Vault:
         encrypt: bool = True,
         max_entries: int = 5000,
         placeholder_template: str = DEFAULT_PLACEHOLDER_TEMPLATE,
+        key_path: str | os.PathLike | None = None,
     ) -> None:
         self.session_id = session_id or "default"
         self.store_path = Path(store_path) if store_path else None
         self.max_entries = max_entries
         self.placeholder_template = placeholder_template
+        self._key_path = Path(key_path) if key_path else None
 
         self._lock = threading.RLock()
         self._forward: OrderedDict[tuple[str, str], VaultEntry] = OrderedDict()
@@ -122,6 +211,8 @@ class Vault:
     # -- 鍵管理 -----------------------------------------------------------
     @property
     def key_path(self) -> Path | None:
+        if self._key_path is not None:
+            return self._key_path
         if self.store_path is None:
             return None
         return self.store_path.with_name("key.bin")
@@ -138,11 +229,9 @@ class Vault:
         assert kp is not None
         kp.parent.mkdir(parents=True, exist_ok=True)
         if kp.exists():
-            return kp.read_bytes()
+            return _read_key_file(kp)
         key = os.urandom(32)
-        kp.write_bytes(key)
-        with contextlib.suppress(OSError):
-            os.chmod(kp, stat.S_IRUSR | stat.S_IWUSR)
+        _write_key_file(kp, key)
         return key
 
     # -- 暗号化 -----------------------------------------------------------

@@ -129,14 +129,18 @@ class Entity:
 _DIGIT = r"[0-9０-９]"
 _HYPHEN = r"[-‐‑‒–—―ー－―\s]"
 
+# 前後の桁ガードが無いと「03-1234-5678」「1234-567890」の内側
+# (234-5678 / 678-1234 等) を郵便番号として誤検出する。
 RE_POSTAL = re.compile(
-    r"〒?\s*(\d{3})\s*[-‐‑‒–—―ー－]\s*(\d{4})"
+    r"(?<![\d０-９])〒?\s*(\d{3})\s*[-‐‑‒–—―ー－]\s*(\d{4})(?![\d０-９])"
 )
 RE_POSTAL_PLAIN = re.compile(r"(?<!\d)(\d{3})(\d{4})(?!\d)")
 
+# 区切りに \s を使うと文末の改行まで飲み込み、マスク時に
+# 行が連結される。空白は半角/全角スペースに限定する。
 RE_PHONE = re.compile(
     r"(?<![\d０-９])"
-    r"(0(?:\d|[-‐‑‒–—―ー－()（）\s]){9,16})"
+    r"(0(?:\d|[-‐‑‒–—―ー－()（） 　]){9,16})"
     r"(?![\d０-９])"
 )
 
@@ -224,9 +228,12 @@ class _OrgPatterns:
 
 # 前置形の名称に紛れ込む「文の続き」を切り落とすための目印。
 # 例: 「株式会社サンプル商事に勤めています」-> 「サンプル商事」
+# 「株式会社テスト工業の田中太郎」のように助詞「の」で人名が
+# 続く場合も、法人名に飲み込ませない (人名の取りこぼし防止)。
+# ひらがな (「のむら」等) が続く場合は名称の一部とみなし、切らない。
 _ORG_CONTINUATION = re.compile(
     r"(?:です|ます|でした|ました|します|した|して|する|など|から|まで|という|により|による|"
-    r"として|について|[はがをにへも](?=[\u4e00-\u9fff\u30a0-\u30ff]))"
+    r"として|について|[はがをにへもの](?=[\u4e00-\u9fff\u30a0-\u30ff]))"
 )
 
 
@@ -340,11 +347,23 @@ class Detector:
             yield Entity("API_KEY", m.start(), m.end(), m.group(0), 0.95, "regex")
 
         # マイナンバー (12 桁 + 検査用数字)
+        # 「マイナンバーカード」の近くにあればカード番号として区別する。
         for m in RE_MYNUMBER.finditer(text):
             raw = m.group(1)
-            if V.is_my_number(raw):
-                conf = 0.98 if _has_context(text, m.start(), m.end(), "MYNUMBER") else 0.93
-                yield Entity("MYNUMBER", m.start(), m.end(), raw, conf, "checksum")
+            if not V.is_my_number(raw):
+                continue
+            # 「マイナンバーカード番号:」は数字の直前に収まらないため
+            # window を広めに取る。
+            card_ctx = _has_context(
+                text, m.start(), m.end(), "MYNUMBER_CARD", window=24
+            )
+            if card_ctx:
+                yield Entity(
+                    "MYNUMBER_CARD", m.start(), m.end(), raw, 0.99, "checksum",
+                )
+                continue
+            conf = 0.98 if _has_context(text, m.start(), m.end(), "MYNUMBER") else 0.93
+            yield Entity("MYNUMBER", m.start(), m.end(), raw, conf, "checksum")
 
         # 法人番号 (13 桁 + 検査用数字)
         for m in RE_CORP_NUMBER.finditer(text):
@@ -362,20 +381,21 @@ class Detector:
 
         # 電話番号
         for m in RE_PHONE.finditer(text):
-            raw = m.group(1)
+            raw = m.group(1).rstrip(" 　()（）")
+            end = m.start() + len(raw)
             digits = V.normalize_digits(raw)
             if not V.is_japanese_phone(raw):
                 continue
             if len(set(digits)) <= 2:
                 continue
-            ctx = _has_context(text, m.start(), m.end(), "PHONE")
+            ctx = _has_context(text, m.start(), end, "PHONE")
             conf = 0.95 if ctx else 0.82
             if len(digits) == 11 and digits[1] in "789":
                 conf = max(conf, 0.9 if not ctx else 0.96)
             if not ctx and len(digits) == 10:
                 # 固定電話は 10 桁の数字列が偶然並ぶ可能性があるため少し下げる
                 conf = 0.78
-            yield Entity("PHONE", m.start(), m.end(), raw, conf, "regex")
+            yield Entity("PHONE", m.start(), end, raw, conf, "regex")
 
         # 郵便番号 (〒 または ハイフン付き)
         for m in RE_POSTAL.finditer(text):
@@ -390,12 +410,22 @@ class Detector:
             yield Entity("PASSPORT", m.start(), m.end(), m.group(1), 0.9 if ctx else 0.6, "regex")
 
         # 生年月日
-        for pat, conf in ((RE_DATE_ERA, 0.92), (RE_DATE_WESTERN, 0.9)):
+        # 西暦・スラッシュ表記の日付は文書に普通に現れるため、
+        # 文脈語 (生年月日 等) が無ければ既定の min_confidence (0.5) を
+        # 下回る 0.4 に落としてマスク対象から外す。
+        # 元号表記は生年月日である可能性が高いので単独でも拾う。
+        for pat, conf_ctx, conf_alone in (
+            (RE_DATE_ERA, 0.96, 0.92),
+            (RE_DATE_WESTERN, 0.92, 0.4),
+            (RE_DATE_SLASH, 0.92, 0.4),
+        ):
             for m in pat.finditer(text):
-                ctx = _has_context(text, m.start(), m.end(), "PERSON")
+                ctx = _has_context(text, m.start(), m.end(), "DATE_OF_BIRTH")
+                if not ctx:
+                    ctx = _has_context(text, m.start(), m.end(), "PERSON")
+                conf = conf_ctx if ctx else conf_alone
                 yield Entity(
-                    "DATE_OF_BIRTH", m.start(), m.end(), m.group(0),
-                    conf if not ctx else min(0.96, conf + 0.04), "regex",
+                    "DATE_OF_BIRTH", m.start(), m.end(), m.group(0), conf, "regex",
                 )
 
         # IP アドレス
@@ -574,9 +604,15 @@ class Detector:
                 i = end + honorific_len
                 continue
 
-            # 直後に続く名の部分 (漢字・カタカナ 1-4 文字)
+            # 直後に続く名の部分 (漢字・カタカナ 1-4 文字)。
+            # 敬称 (「山本健太様」の「様」など) は名に飲み込ませない。
             j = end
-            while j < n and (j - end) < 4 and self._is_name_char(text[j]):
+            while (
+                j < n
+                and (j - end) < 4
+                and self._is_name_char(text[j])
+                and not any(text.startswith(h, j) for h in HONORIFICS)
+            ):
                 j += 1
             name_len = j - end
 

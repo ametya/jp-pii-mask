@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -482,6 +484,12 @@ class TestOcrPaths:
 
 
 class TestCli:
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        # 鍵はユーザー領域 (JP_PII_MASK_HOME) に作られるため、
+        # テストが実ユーザーの設定ディレクトリを汚さないようにする。
+        monkeypatch.setenv("JP_PII_MASK_HOME", str(tmp_path / "home"))
+
     def test_file_mask_and_restore_via_cli(self, tmp_path, capsys):
         src = tmp_path / "invoice.pdf"
         _write_pii_pdf(src)
@@ -533,3 +541,129 @@ class TestCli:
         rc = main(["--config", config, "file", "mask", str(tmp_path / "none.pdf")])
         assert rc == 2
         assert "エラー" in capsys.readouterr().err
+
+    def test_mask_key_lives_in_user_dir_not_next_to_output(self, tmp_path, capsys):
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        config = str(tmp_path / "config.json")
+        rc = main(["--config", config, "file", "mask", str(src), "--ocr", "off", "--json"])
+        assert rc == 0
+        capsys.readouterr()
+        # 出力先フォルダに鍵が無く、ユーザー領域に作られていること
+        assert not (tmp_path / "key.bin").exists()
+        assert (tmp_path / "home" / "file-key.bin").is_file()
+
+    def test_audit_log_written_on_mask_and_restore(self, tmp_path, capsys):
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        config = str(tmp_path / "config.json")
+        rc = main(["--config", config, "file", "mask", str(src), "--ocr", "off", "--json"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+
+        rc = main(
+            [
+                "--config", config, "file", "restore",
+                payload["text"], "--vault", payload["vault"], "--json",
+            ]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+        audit_path = tmp_path / "home" / "audit.log"
+        assert audit_path.is_file()
+        entries = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        mask_events = [e for e in entries if e["event"] == "file.mask"]
+        assert len(mask_events) == 1
+        assert mask_events[0]["entities"] == payload["entities"]
+        assert any(e["event"] == "file.restore" for e in entries)
+        # ファイル名・パスは監査ログに残さない
+        assert "invoice" not in json.dumps(entries, ensure_ascii=False)
+
+    def test_audit_command_shows_entries(self, tmp_path, capsys):
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        config = str(tmp_path / "config.json")
+        assert main(["--config", config, "file", "mask", str(src), "--ocr", "off"]) == 0
+        capsys.readouterr()
+
+        rc = main(["--config", config, "audit", "--last", "5", "--json"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        data = json.loads(out)
+        assert data["entries"][0]["event"] == "file.mask"
+
+        rc = main(["--config", config, "audit"])
+        assert rc == 0
+        assert "file.mask" in capsys.readouterr().out
+
+    def test_mask_no_vault_writes_no_key(self, tmp_path, capsys):
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        config = str(tmp_path / "config.json")
+        rc = main(
+            ["--config", config, "file", "mask", str(src), "--ocr", "off", "--no-vault", "--json"]
+        )
+        assert rc == 0
+        capsys.readouterr()
+        assert not (tmp_path / "home" / "file-key.bin").exists()
+
+
+class TestKeySeparation:
+    def test_legacy_key_next_to_vault_is_preferred(self, tmp_path, monkeypatch):
+        # 旧バージョンの出力 (key.bin が対応表の隣) を優先して使うこと。
+        # ユーザー領域に無関係な鍵があっても復元できる必要がある。
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        result = mask_file(
+            src, None, detector=_make_detector(), vault=_make_vault(tmp_path), ocr="off"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "file-key.bin").write_bytes(os.urandom(32))
+        monkeypatch.setenv("JP_PII_MASK_HOME", str(home))
+
+        restored = restore_file(result.text_path, result.vault_path)
+        assert restored.missing == []
+        assert PHONE in restored.text
+
+    def test_restore_without_any_key_fails_clearly(self, tmp_path, monkeypatch):
+        src = tmp_path / "invoice.pdf"
+        _write_pii_pdf(src)
+        result = mask_file(
+            src, None, detector=_make_detector(), vault=_make_vault(tmp_path), ocr="off"
+        )
+        # 対応表だけを別フォルダに移し、鍵 (key.bin) は元の場所に残す
+        moved = tmp_path / "moved"
+        moved.mkdir()
+        moved_vault = moved / result.vault_path.name
+        moved_text = moved / result.text_path.name
+        shutil.copy(result.vault_path, moved_vault)
+        shutil.copy(result.text_path, moved_text)
+        monkeypatch.setenv("JP_PII_MASK_HOME", str(tmp_path / "empty-home"))
+
+        with pytest.raises(FileMaskError) as excinfo:
+            restore_file(moved_text, moved_vault)
+        assert "file-key.bin" in str(excinfo.value)
+
+    def test_raw_legacy_key_file_still_loads(self, tmp_path):
+        # DPAPI 導入前に作られた生の 32 バイト鍵を上書きしないこと
+        key_path = tmp_path / "key.bin"
+        key = os.urandom(32)
+        key_path.write_bytes(key)
+        Vault(store_path=tmp_path / "out.vault", encrypt=True, key_path=key_path)
+        assert key_path.read_bytes() == key
+
+    @pytest.mark.skipif(os.name != "nt", reason="DPAPI は Windows 専用")
+    def test_key_file_is_dpapi_protected(self, tmp_path):
+        key_path = tmp_path / "file-key.bin"
+        Vault(store_path=tmp_path / "out.vault", encrypt=True, key_path=key_path)
+        blob = key_path.read_bytes()
+        assert blob.startswith(b"JPPMK1\x00")
+        assert len(blob) != 32
+        # 同じユーザーなら新しい Vault からも読める (DPAPI 復号の往復)
+        Vault(store_path=tmp_path / "out.vault", encrypt=True, key_path=key_path)

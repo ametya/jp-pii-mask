@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .config import config_dir
 from .detect import Detector, Entity
 from .masking import Masker, UnmaskResult
 from .ocr import OCR_MISSING_HINT, OcrUnavailable, ocr_available, ocr_image
@@ -55,6 +56,7 @@ __all__ = [
     "IMAGE_EXTENSIONS",
     "FileMaskError",
     "FileMaskResult",
+    "file_key_path",
     "mask_file",
     "restore_file",
 ]
@@ -611,6 +613,16 @@ def _save_image(image: Any, out: Path) -> None:
 # ---------------------------------------------------------------------------
 # 公開 API
 # ---------------------------------------------------------------------------
+def file_key_path() -> Path:
+    """file サブコマンド用の共通鍵の保存先。
+
+    出力物 (`<name>.masked.vault`) と同じフォルダに置くと、フォルダを
+    共有・コピーした時点で暗号化が意味を失うため、ユーザー領域
+    (設定ディレクトリ) に分離する。Windows では DPAPI で保護される。
+    """
+    return config_dir() / "file-key.bin"
+
+
 def default_output_path(src: Path) -> Path:
     """入力 `a.pdf` に対する既定の出力 `a.masked.pdf`。"""
     return src.with_name(f"{src.stem}.masked{src.suffix}")
@@ -726,13 +738,20 @@ def restore_file(
             "  file mask が同じ場所に作った <name>.masked.vault を指定してください。"
         )
 
-    vault = Vault(store_path=vault_file, encrypt=True)
+    # 鍵の探索順:
+    #   1. 対応表と同じフォルダの key.bin (旧バージョンが作った出力)
+    #   2. ユーザー領域の file-key.bin (現行の file mask が作る鍵)
+    legacy_key = vault_file.with_name("key.bin")
+    key_path = legacy_key if legacy_key.is_file() else file_key_path()
     try:
+        vault = Vault(store_path=vault_file, encrypt=True, key_path=key_path)
         loaded = vault.load()
     except ValueError as exc:
         raise FileMaskError(
-            "対応表を復号できませんでした。同じフォルダにある key.bin が必要です: "
-            f"{exc}"
+            "対応表を復号できませんでした。次のいずれかの鍵ファイルが必要です:\n"
+            f"  - {legacy_key} (旧バージョンの出力)\n"
+            f"  - {file_key_path()}\n"
+            f"詳細: {exc}"
         ) from exc
     if not loaded:
         raise FileMaskError(f"対応表を読み込めませんでした: {vault_file}")

@@ -329,6 +329,24 @@ def main() -> int:
                 f"masked={state['stats']['entities_masked']} restored={state['stats']['placeholders_restored']}",
             )
 
+            r = client.get(f"{base}/admin/api/audit")
+            audit = r.json()
+            events = [e["event"] for e in audit["entries"]]
+            check(
+                "監査 API: マスク/復元が記録されている",
+                r.status_code == 200 and "proxy.mask" in events and "proxy.restore" in events,
+                str(events[:5]),
+            )
+            check(
+                "監査ログに原文が含まれない",
+                "田中太郎" not in json.dumps(audit, ensure_ascii=False),
+            )
+            check(
+                "監査ログファイルが設定ディレクトリに作られる",
+                (Path(workdir) / "audit.log").is_file(),
+                str(Path(workdir) / "audit.log"),
+            )
+
             r = client.get(
                 f"{base}/admin/api/detect",
                 params={"text": "佐藤花子、〒100-0001 東京都千代田区千代田1-1"},
@@ -361,6 +379,9 @@ def main() -> int:
                 f"{base}/admin/api/mapping", headers={"Origin": "https://evil.example.com"}
             )
             check("外部オリジンからの読み取りを拒否 (403)", r.status_code == 403)
+
+            r = client.get(f"{base}/admin/api/state", headers={"Host": "evil.example"})
+            check("未知の Host からのアクセスを拒否 (403)", r.status_code == 403)
     finally:
         print("\n[8] 後始末")
         stopped = terminate_tree(proc)

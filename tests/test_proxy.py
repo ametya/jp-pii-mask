@@ -142,7 +142,9 @@ def upstream():
 
 
 @pytest.fixture()
-def proxy_client(upstream, tmp_path):
+def proxy_client(upstream, tmp_path, monkeypatch):
+    # 監査ログが実ユーザーの設定ディレクトリに書かれないようにする
+    monkeypatch.setenv("JP_PII_MASK_HOME", str(tmp_path / "home"))
     store = ConfigStore(str(tmp_path / "config.json"))
     store.update(
         upstream=upstream.base_url,
@@ -296,6 +298,15 @@ class TestRequestMasking:
         sent = json.dumps(upstream.received[-1], ensure_ascii=False)
         assert "田中太郎" not in sent
         assert "[氏名_1]" in sent
+
+    def test_multipart_is_passed_and_counted(self, proxy_client):
+        # multipart はマスク対象外。ただし統計にカウントし、素通しを可視化する。
+        proxy_client.post(
+            "/v1/chat/completions",
+            files={"file": ("note.txt", "hello 田中太郎".encode(), "text/plain")},
+        )
+        stats = proxy_client.get("/admin/api/stats").json()
+        assert stats["multipart_passed"] == 1
 
     def test_key_names_not_masked(self, proxy_client, upstream):
         """model 等の構造キーはマスクしない (上流が壊れないこと)。"""
@@ -497,6 +508,33 @@ class TestAdminApi:
         proxy_client.post("/admin/api/state", json={"api_key": ""})
         assert proxy_client.get("/admin/api/state").json()["api_key_set"] is False
 
+    def test_audit_endpoint_records_mask_without_pii(self, proxy_client, upstream):
+        chat(proxy_client, "田中太郎の電話は 090-1234-5678 です。")
+        data = proxy_client.get("/admin/api/audit").json()
+        assert data["enabled"] is True
+        events = [e["event"] for e in data["entries"]]
+        assert "proxy.mask" in events
+
+        entry = next(e for e in data["entries"] if e["event"] == "proxy.mask")
+        assert entry["count"] >= 2
+        assert set(entry["types"]) & {"PERSON", "PHONE"}
+        # 原文・検出値・生のセッション ID は記録しない
+        dump = json.dumps(data, ensure_ascii=False)
+        assert "田中太郎" not in dump
+        assert "090-1234-5678" not in dump
+
+    def test_audit_records_restore(self, proxy_client, upstream):
+        chat(proxy_client, "メールは taro@example.jp です。")
+        data = proxy_client.get("/admin/api/audit").json()
+        assert any(e["event"] == "proxy.restore" for e in data["entries"])
+
+    def test_audit_can_be_disabled_at_runtime(self, proxy_client, upstream):
+        proxy_client.post("/admin/api/state", json={"audit_log": False})
+        chat(proxy_client, "山田花子の電話は 090-1111-2222 です。")
+        data = proxy_client.get("/admin/api/audit").json()
+        assert data["enabled"] is False
+        assert data["entries"] == []
+
     def test_vault_save_endpoint(self, proxy_client):
         assert proxy_client.post("/admin/api/vault/save").status_code == 200
 
@@ -546,6 +584,34 @@ class TestOriginGuard:
     def test_no_origin_still_works(self, proxy_client):
         """Origin を送らない CLI / SDK は従来どおり通ること。"""
         assert proxy_client.get("/admin/api/state").status_code == 200
+
+
+class TestHostGuard:
+    def test_allowed_hosts(self, proxy_client):
+        for host in ("127.0.0.1", "localhost", "127.0.0.1:8787", "tauri.localhost"):
+            resp = proxy_client.get("/healthz", headers={"host": host})
+            assert resp.status_code == 200, host
+
+    def test_unknown_host_is_blocked(self, proxy_client):
+        resp = proxy_client.get("/healthz", headers={"host": "evil.example"})
+        assert resp.status_code == 403
+        assert resp.json()["error"]["type"] == "jp_pii_mask_host_denied"
+
+    def test_origin_with_unknown_host_is_blocked(self, proxy_client):
+        resp = proxy_client.get(
+            "/admin/api/state",
+            headers={"host": "evil.example", "origin": "http://localhost"},
+        )
+        assert resp.status_code == 403
+
+    def test_non_loopback_bind_skips_host_check(self, upstream, tmp_path, monkeypatch):
+        # 0.0.0.0 バインドでは LAN の実 IP が Host に載るため検証しない
+        monkeypatch.setenv("JP_PII_MASK_HOME", str(tmp_path / "home"))
+        store = ConfigStore(str(tmp_path / "config.json"))
+        store.update(upstream=upstream.base_url, host="0.0.0.0", vault_persist=False)
+        with TestClient(create_app(store)) as client:
+            resp = client.get("/healthz", headers={"host": "192.168.1.20"})
+        assert resp.status_code == 200
 
 
 class TestSessionIsolation:

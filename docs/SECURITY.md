@@ -23,8 +23,8 @@
 | # | 脅威 | 対策 | 実装 |
 |---|---|---|---|
 | T1 | **上流 AI に原文が渡る** | 送信前にマスク | `proxy.mask_payload` |
-| T2 | **悪意ある Web サイトがローカル API を読む** | Origin 制限 + 403 | `proxy._local_origin_guard` |
-| T3 | **Vault ファイルを覗かれる** | AES-GCM で暗号化、鍵は 0600 | `vault._encrypt_bytes` |
+| T2 | **悪意ある Web サイトがローカル API を読む**（DNS リバインディング含む） | Origin 制限 + Host 検証 + 403 | `proxy._local_origin_guard` |
+| T3 | **Vault ファイルを覗かれる** | AES-GCM で暗号化、鍵は 0600（Windows は DPAPI で保護） | `vault._encrypt_bytes` |
 | T4 | **会話 A の復元表が会話 B に適用される** | セッション分離 | `vault.SessionVaults` |
 | T5 | **ローカルネットワークから API を叩かれる** | 既定で `127.0.0.1` にのみ bind | `config.host` |
 | T6 | **API キーがログ・応答・設定に残る** | 応答から除外、既定で非保存 | `config.to_public_dict` |
@@ -65,6 +65,21 @@ _ALLOWED_ORIGIN_RE = re.compile(
 これは特に `/admin/api/mapping`（原文を返す）と
 `/admin/api/state`（設定を変更できる）を守るために重要です。
 
+同じ目的で **Host ヘッダも検証**します。悪意あるサイトが DNS を 127.0.0.1 に
+向けると、ブラウザはリクエストをローカルプロキシへ送ってしまいます
+（DNS リバインディング）。そこで `127.0.0.1` に bind している間は、
+`localhost` / `127.0.0.1` / `[::1]` / `tauri.localhost`（+ テスト用の
+`testserver`）以外の `Host` を **403** で拒否します。
+
+```
+Host: 127.0.0.1:8787      → 200
+Host: evil.example        → 403 (jp_pii_mask_host_denied)
+```
+
+`0.0.0.0` に bind した場合は、LAN の実 IP が `Host` に載るため
+列挙による検証が成立しません。この場合は Host 検証を行わない代わりに、
+3.1 の警告どおり外部露出そのものを避けてください。
+
 ### 3.3 Vault の暗号化
 
 ```
@@ -77,6 +92,16 @@ ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad=b"jp-pii-mask-v1")
 - AAD によりコンテキストを束縛（他の用途への流用を防止）
 - 鍵が無い場合は生成。`cryptography` が無い場合は平文にフォールバック
   （その場合でもファイル権限は 0600 に設定）
+
+**ファイル処理（`file mask`）の鍵は分離しています:**
+
+- 対応表（`.masked.vault`）用の鍵は `~/.jp-pii-mask/file-key.bin`。
+  **出力フォルダには鍵を残しません**（出力物を配っても鍵は手元に残る）
+- Windows では **DPAPI（OS のユーザー鍵）で保護**して保存します。
+  ファイルをコピーしても、別のユーザー / 別の PC では復号できません
+- 旧バージョンが出力フォルダに作った `key.bin`（Vault の隣）は、
+  後方互換のため restore 時に優先して読みます（移行用。残すと
+  そのフォルダを持つ人が復元できるため、移行後は削除を推奨）
 
 **テストで検証済み:** 保存ファイルのバイト列に原文が含まれないこと
 （`test_masking.py::TestVaultPersistence::test_saved_file_is_not_plaintext`）。
@@ -99,6 +124,24 @@ ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad=b"jp-pii-mask-v1")
 - 統計は `requests_total` / `entities_masked` / `placeholders_restored` /
   `by_type` など、原文を含まない数値のみ
 
+### 3.6 監査ログ（`audit.py`、既定 OFF）
+
+`audit_log=true` で、操作の記録を JSONL（`~/.jp-pii-mask/audit.log`）に残します。
+**記録するもの / しないものを設計で固定**しています。
+
+| 記録する | 記録しない（漏洩経路を作らない） |
+|---|---|
+| 時刻、操作種別（`proxy.mask` / `proxy.restore` / `file.mask` / `file.restore`） | 原文・検出値（マスク前後の文字列） |
+| セッションの **SHA-256 先頭 12 桁**（`x-jp-pii-session` 等の生値ではない） | セッション ID の生値 |
+| 件数（マスク数・復元数・未復元数）、種別名（`PERSON` など） | ファイルパス・ファイル名 |
+
+- 追記専用に近い運用: 1 MB でローテーション（2 世代）。書込み失敗は
+  本体処理を止めない（best-effort）
+- 表示は `jp-pii-mask audit --last N`（`--json` 可）または
+  `GET /admin/api/audit?limit=N`。どちらも同じ方針で原文を含みません
+- 「誰が」は記録しません（セッションのハッシュのみ）。
+  端末の利用者識別は OS のアカウント分離に依存します
+
 ---
 
 ## 4. 既知の制限とリスク
@@ -110,6 +153,7 @@ ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad=b"jp-pii-mask-v1")
 - 未知の姓、難読名、ひらがなのみの人名は取りこぼす可能性があります
 - 文脈に依存しない略称・愛称・社内用語は検出できません
 - プロキシ経由の画像・PDF・`multipart/form-data` はマスクせず素通しします
+  （素通しを可視化するため、統計 `multipart_passed` と警告ログに記録します）
 - `jp-pii-mask file mask`（PDF・画像のローカル処理）も使えますが、
   OCR の読み取りを外した箇所は黒塗りされません（下記 4.6 参照）
 
@@ -149,8 +193,10 @@ Vault の鍵は OS のファイル権限に依存します。
   検出するため、読み取りを外した個人情報は黒塗りされずに残ります
 - **マスク済み本体は不可逆** — 出力した PDF・画像は画像化されるため、
   元の見た目・テキスト層には戻せません（復元できるのは `.masked.txt` のみ）
-- **対応表の保護** — `.masked.vault` は Vault と同じ AES-GCM で暗号化されますが、
-  鍵は `~/.jp-pii-mask/key.bin` に依存します
+- **対応表の保護** — `.masked.vault` は Vault と同じ AES-GCM で暗号化されます。
+  鍵は `~/.jp-pii-mask/file-key.bin`（Windows では DPAPI で保護）で、
+  出力フォルダには残しません。旧バージョンの出力に付属する `key.bin`
+  （Vault の隣）がある場合は後方互換のため優先されます
 - **出力先の上書き** — 既定の出力先は入力と同じフォルダの `<name>.masked.*` で、
   同名の出力が既にある場合は上書きされます（入力ファイル自体は変更しません）
 - **OCR の処理範囲** — Windows 標準 OCR（OS 内蔵）のみを使い、
@@ -162,10 +208,11 @@ Vault の鍵は OS のファイル権限に依存します。
 
 - [ ] `--host` を変更していない（既定の `127.0.0.1` のまま）
 - [ ] `store_api_key` は必要時のみ `true`
-- [ ] `~/.jp-pii-mask/` の権限が適切（鍵が `0600`）
+- [ ] `~/.jp-pii-mask/` の権限が適切（鍵が `0600`。Windows は DPAPI 保護）
 - [ ] `custom_terms` に自組織固有の固有名詞を登録
 - [ ] 制御パネルの「検出テスト」で自組織の典型的な文書を確認
 - [ ] `restore_misses` が増えていないか定期的に確認
+- [ ] 必要なら `audit_log=true`（原文・ファイル名は記録されません）
 - [ ] ログを外部に転送する場合、原文が含まれないことを確認
 
 ---

@@ -18,7 +18,11 @@
 
 意図的な制限 (README に明記):
   - multipart/form-data とバイナリ本文はマスクせず素通しする。
+    ただし「見えていない転送」を残さないため、統計 (multipart_passed) と
+    警告ログに件数を記録する。
   - SSE の data 行が JSON でない場合は、素のテキストとして逐次復元する。
+  - ループバックにバインドしているときは Host ヘッダを検証する
+    (DNS リバインディング対策)。0.0.0.0 バインド時は検証しない。
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .audit import AuditLog, hash_id
 from .config import Config, ConfigStore
 from .detect import Detector, Entity
 from .masking import Masker, StreamRestorer
@@ -97,6 +102,33 @@ def _origin_allowed(origin: str) -> bool:
     return bool(_ALLOWED_ORIGIN_RE.match(origin.strip()))
 
 
+# ループバック拘束時に許可する Host 値 (ポートは url.hostname で除去済み)。
+# tauri.localhost はデスクトップ GUI、testserver は Starlette TestClient。
+_ALLOWED_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "::1", "tauri.localhost", "testserver"}
+)
+
+_LOOPBACK_BINDS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_allowed(host: str, bind_host: str) -> bool:
+    """DNS リバインディング対策の Host 検証。
+
+    - ループバックにバインドしているときだけ厳格に判定する。
+      0.0.0.0 などにバインドした場合、LAN 内のクライアントは
+      実 IP を Host に載せるため、列挙による検証は成立しない。
+    - Host ヘッダが無い要求 (HTTP/1.0 等) は通す。
+    """
+    if not host:
+        return True
+    host = host.lower().strip("[]")
+    if bind_host.lower() not in _LOOPBACK_BINDS:
+        return True
+    if host in _ALLOWED_HOSTS:
+        return True
+    return host == bind_host.lower().strip("[]")
+
+
 def _cors_headers(origin: str) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
@@ -130,6 +162,7 @@ class Stats:
     restore_misses: int = 0
     bytes_in: int = 0
     bytes_out: int = 0
+    multipart_passed: int = 0
     started_at: float = field(default_factory=time.time)
     by_type: dict[str, int] = field(default_factory=dict)
     last_error: str = ""
@@ -147,6 +180,7 @@ class Stats:
             "restore_misses": self.restore_misses,
             "bytes_in": self.bytes_in,
             "bytes_out": self.bytes_out,
+            "multipart_passed": self.multipart_passed,
             "by_type": dict(self.by_type),
             "uptime_seconds": round(time.time() - self.started_at, 1),
             "last_error": self.last_error,
@@ -165,6 +199,7 @@ class MaskingProxy:
         self._custom_res: list[re.Pattern[str]] = []
         self._custom_signature: tuple | None = None
         self._vaults = self._build_vaults(store.config)
+        self.audit = AuditLog(enabled=store.config.audit_log)
         self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
@@ -334,6 +369,22 @@ class MaskingProxy:
 
         return walk(payload, None), restored, misses
 
+    def _audit_restore(
+        self, vault: Vault, restored: int, misses: int, *, stream: bool = False
+    ) -> None:
+        """復元の監査記録 (原文・プレースホルダは記録しない)。"""
+        if not (restored or misses):
+            return
+        fields: dict[str, Any] = {
+            "session": hash_id(vault.session_id),
+            "restored": restored,
+        }
+        if misses:
+            fields["misses"] = misses
+        if stream:
+            fields["stream"] = True
+        self.audit.record("proxy.restore", **fields)
+
     # ------------------------------------------------------------------
     # 転送
     # ------------------------------------------------------------------
@@ -380,6 +431,15 @@ class MaskingProxy:
         content_type = request.headers.get("content-type", "")
         is_json = "application/json" in content_type
 
+        if "multipart/form-data" in content_type:
+            # マスクせず素通しするが、「見えていない転送」を統計と
+            # ログに残す (黙って素通しすると監査時に説明できない)。
+            self.stats.multipart_passed += 1
+            log.warning(
+                "multipart/form-data の本文 (%d bytes) はマスクされずに転送されます",
+                len(raw),
+            )
+
         if cfg.enabled and cfg.masking_enabled and cfg.mask_requests and is_json and raw:
             try:
                 payload = json.loads(raw)
@@ -394,6 +454,13 @@ class MaskingProxy:
                     self.stats.entities_masked += masked_count
                     self.stats.add_types(type_counts)
                     log.info("マスク: %d 件 %s", masked_count, type_counts)
+                    self.audit.record(
+                        "proxy.mask",
+                        session=hash_id(vault.session_id),
+                        path=path,
+                        count=masked_count,
+                        types=type_counts,
+                    )
 
         url = f"{cfg.normalized_upstream()}/{path.lstrip('/')}"
         if request.url.query:
@@ -455,6 +522,7 @@ class MaskingProxy:
                     content = json.dumps(new_payload, ensure_ascii=False).encode("utf-8")
                     self.stats.placeholders_restored += restored
                     self.stats.restore_misses += misses
+                    self._audit_restore(vault, restored, misses)
                 except Exception as exc:
                     self.stats.last_error = f"応答 JSON 解析失敗: {exc}"
             elif ctype.startswith("text/"):
@@ -462,6 +530,7 @@ class MaskingProxy:
                 content = res.text.encode("utf-8")
                 self.stats.placeholders_restored += res.restored
                 self.stats.restore_misses += len(res.missing)
+                self._audit_restore(vault, res.restored, len(res.missing))
 
         self.stats.bytes_out += len(content)
         return Response(
@@ -535,6 +604,7 @@ class MaskingProxy:
             log.warning("ストリーム復元エラー: %s", exc)
         finally:
             self.stats.placeholders_restored += restorer.restored_total
+            self._audit_restore(vault, restorer.restored_total, 0, stream=True)
             await upstream.aclose()
             if pending_plain:
                 pass
@@ -566,12 +636,30 @@ def create_app(store: ConfigStore | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def _local_origin_guard(request: Request, call_next):
-        """ローカル以外のオリジンからの要求を遮断しつつ、GUI 用 CORS を返す。
+        """ローカル以外のオリジン・Host からの要求を遮断しつつ、GUI 用 CORS を返す。
 
+        - Host 検証: ループバック拘束時、未知の Host 名は 403。
+          (悪意あるサイトが DNS を 127.0.0.1 に向けて管理 API を
+          読む DNS リバインディングへの防御)
         - Origin ヘッダが無い要求 (CLI / curl / 各 SDK) はそのまま通す。
         - 許可オリジン: localhost / 127.0.0.1 / tauri.localhost
         - それ以外の Origin が付いた要求は 403 (ブラウザ経由の盗み見を防ぐ)。
         """
+        host = request.url.hostname or ""
+        if not _host_allowed(host, proxy.config.host):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": {
+                        "type": "jp_pii_mask_host_denied",
+                        "message": (
+                            "この Host からのアクセスは許可されていません "
+                            "(localhost / 127.0.0.1 でアクセスしてください)。"
+                        ),
+                    }
+                },
+            )
+
         origin = request.headers.get("origin")
         if not origin:
             return await call_next(request)
@@ -636,6 +724,7 @@ def create_app(store: ConfigStore | None = None) -> FastAPI:
             "upstream", "upstream_preset", "api_key", "store_api_key",
             "use_ner", "min_confidence", "custom_terms", "redact_only",
             "forward_client_auth", "port", "host", "vault_persist",
+            "audit_log",
         }
         changes = {k: v for k, v in data.items() if k in allowed}
         if not changes:
@@ -644,6 +733,8 @@ def create_app(store: ConfigStore | None = None) -> FastAPI:
         cfg = store.update(**changes)
         if changes.get("vault_persist") is not None or changes.get("vault_encrypt") is not None:
             proxy._vaults = proxy._build_vaults(cfg)
+        if changes.get("audit_log") is not None:
+            proxy.audit.enabled = bool(cfg.audit_log)
 
         # デスクトップ GUI は「POST の応答をそのまま状態として描画」するため、
         # GET /admin/api/state と同じ形を最上位に含めて返す。
@@ -682,6 +773,16 @@ def create_app(store: ConfigStore | None = None) -> FastAPI:
         from .config import UPSTREAM_PRESETS
 
         return UPSTREAM_PRESETS
+
+    @app.get("/admin/api/audit")
+    async def audit_tail(limit: int = 50) -> dict[str, Any]:
+        """監査ログの末尾を返す (原文・検出値は含まれない)。"""
+        limit = max(1, min(limit, 500))
+        return {
+            "enabled": proxy.audit.enabled,
+            "path": str(proxy.audit.path),
+            "entries": proxy.audit.tail(limit),
+        }
 
     @app.get("/admin/api/mapping")
     async def mapping(request: Request) -> dict[str, Any]:

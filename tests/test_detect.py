@@ -244,6 +244,55 @@ class TestOverlapResolution:
         assert starts == sorted(starts)
 
 
+class TestBoundaryRegressions:
+    """検出境界の回帰テスト (過検出・飲み込みの再発防止)。"""
+
+    def test_postal_not_matched_inside_phone(self, det):
+        ents = det.detect("電話: 03-1234-5678")
+        assert texts_of(ents, "PHONE") == ["03-1234-5678"]
+        assert "POSTAL_CODE" not in types_in(ents)
+
+    def test_pension_not_eaten_by_postal(self, det):
+        ents = det.detect("基礎年金番号: 1234-567890")
+        assert texts_of(ents, "PENSION") == ["1234-567890"]
+        assert "POSTAL_CODE" not in types_in(ents)
+
+    def test_phone_does_not_swallow_newline(self, det):
+        ents = det.detect("TEL 03-9876-5432\n次の行です。")
+        assert texts_of(ents, "PHONE") == ["03-9876-5432"]
+
+    def test_phone_strips_trailing_parens(self, det):
+        ents = det.detect("佐藤花子さん（03 9999 8888）にも連絡して")
+        assert texts_of(ents, "PHONE") == ["03 9999 8888"]
+
+    def test_slash_date_with_context(self, det):
+        ents = det.detect("生年月日: 1988/11/30")
+        assert texts_of(ents, "DATE_OF_BIRTH") == ["1988/11/30"]
+
+    def test_plain_western_date_without_context(self, det):
+        # 文脈の無い西暦日付は生年月日と断定しない (過検出防止)
+        ents = det.detect("キャンペーンは2026年10月18日までです。")
+        assert "DATE_OF_BIRTH" not in types_in(ents)
+
+    def test_mynumber_card_vs_mynumber(self, det):
+        card = det.detect("マイナンバーカード番号: 526018159084")
+        assert texts_of(card, "MYNUMBER_CARD") == ["526018159084"]
+        assert "MYNUMBER" not in types_in(card)
+        plain = det.detect("マイナンバー: 526018159084")
+        assert texts_of(plain, "MYNUMBER") == ["526018159084"]
+        assert "MYNUMBER_CARD" not in types_in(plain)
+
+    def test_org_prefix_stops_at_particle_no(self, det):
+        # 「株式会社テスト工業の田中太郎」で人名を法人名に飲み込まない
+        ents = det.detect("株式会社テスト工業の田中太郎です。")
+        assert texts_of(ents, "ORGANIZATION") == ["株式会社テスト工業"]
+        assert texts_of(ents, "PERSON") == ["田中太郎"]
+
+    def test_honorific_not_swallowed_into_name(self, det):
+        ents = det.detect("山本健太様")
+        assert texts_of(ents, "PERSON") == ["山本健太"]
+
+
 class TestCustomTerms:
     def test_custom_term_via_proxy_helper(self):
         import os

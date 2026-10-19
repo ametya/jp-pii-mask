@@ -152,7 +152,13 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 
 def _cmd_file_mask(args: argparse.Namespace) -> int:
-    from .files import FileMaskError, mask_file, mask_result_summary, output_path_for
+    from .files import (
+        FileMaskError,
+        file_key_path,
+        mask_file,
+        mask_result_summary,
+        output_path_for,
+    )
 
     store = ConfigStore(args.config)
     cfg = store.config
@@ -168,9 +174,12 @@ def _cmd_file_mask(args: argparse.Namespace) -> int:
 
     src = Path(args.input)
     out = output_path_for(src, args.out)
+    # 鍵は出力先フォルダではなくユーザー領域に置く (フォルダ共有時に
+    # 暗号化が無意味にならないように)。Windows では DPAPI で保護される。
     vault = Vault(
         store_path=None if args.no_vault else out.with_suffix(".vault"),
         encrypt=True,
+        key_path=None if args.no_vault else file_key_path(),
     )
 
     try:
@@ -187,6 +196,18 @@ def _cmd_file_mask(args: argparse.Namespace) -> int:
     except FileMaskError as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 2
+
+    if cfg.audit_log and result.entities:
+        from .audit import AuditLog
+
+        AuditLog(enabled=True).record(
+            "file.mask",
+            kind=result.kind,
+            pages=result.pages,
+            ocr_pages=result.ocr_pages,
+            entities=result.entities,
+            types=result.by_type,
+        )
 
     if args.json:
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
@@ -208,6 +229,15 @@ def _cmd_file_restore(args: argparse.Namespace) -> int:
     except FileMaskError as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 2
+
+    if (result.restored or result.missing) and ConfigStore(args.config).config.audit_log:
+        from .audit import AuditLog
+
+        AuditLog(enabled=True).record(
+            "file.restore",
+            restored=result.restored,
+            missing=len(result.missing),
+        )
 
     if args.json:
         print(
@@ -265,6 +295,38 @@ def _cmd_config(args: argparse.Namespace) -> int:
         pub = cfg.to_public_dict()
         print(f"設定ファイル: {store.path}")
         print(json.dumps(pub, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    from .audit import AuditLog
+
+    store = ConfigStore(args.config)
+    audit = AuditLog(enabled=store.config.audit_log)
+    entries = audit.tail(args.last)
+
+    if args.json:
+        print(
+            json.dumps(
+                {"path": str(audit.path), "entries": entries},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if not entries:
+        print(f"監査ログは空です: {audit.path}")
+        return 0
+    print(f"監査ログ: {audit.path} (最新 {len(entries)} 件)")
+    for entry in reversed(entries):  # 古い順に表示
+        parts = []
+        for k, v in entry.items():
+            if k in ("ts", "event"):
+                continue
+            rendered = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+            parts.append(f"{k}={rendered}")
+        print(f"  {entry.get('ts', '?')}  {entry.get('event', '?')}  {' '.join(parts)}")
     return 0
 
 
@@ -346,6 +408,11 @@ def build_parser() -> argparse.ArgumentParser:
     fr.add_argument("-o", "--out", default=None, help="復元結果の書き出し先 (省略時は標準出力)")
     fr.add_argument("--json", action="store_true", help="結果を JSON で出力する")
     fr.set_defaults(func=_cmd_file_restore)
+
+    a = sub.add_parser("audit", help="監査ログ (マスク/復元の記録) を表示する")
+    a.add_argument("--last", type=int, default=20, help="表示件数 (既定 20)")
+    a.add_argument("--json", action="store_true", help="結果を JSON で出力する")
+    a.set_defaults(func=_cmd_audit)
 
     return p
 

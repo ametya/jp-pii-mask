@@ -25,6 +25,7 @@ flowchart TB
         VAL[検査用数字<br/>validators.py]
         MSK[マスカー<br/>masking.py]
         VAU[Vault<br/>vault.py]
+        AUD[監査ログ<br/>audit.py]
         CFG[設定<br/>config.py]
     end
 
@@ -44,6 +45,8 @@ flowchart TB
     PW --> MSK
     MSK --> VAU
     ADM --> CFG
+    PW --> AUD
+    ADM --> AUD
     PW --> OA & AN & DS & GM
 ```
 
@@ -167,6 +170,25 @@ AES-GCM(key, nonce, plaintext, aad=b"jp-pii-mask-v1")
 - 鍵が無い場合は生成、`cryptography` が無い場合は平文保存にフォールバック
 - **テストで「保存ファイルに原文が平文で現れないこと」を検証**
 
+### 鍵の分離と DPAPI（`file mask` 向け）
+
+`file mask` の出力はフォルダごと配布され得るため、**鍵を出力フォルダに
+置かない**設計にしました（旧版は Vault の隣に `key.bin` を作っていました）。
+
+```
+proxy / CLI の Vault  :  ~/.jp-pii-mask/key.bin
+file mask の対応表    :  ~/.jp-pii-mask/file-key.bin
+                        (Windows では DPAPI で保護して保存)
+```
+
+- `Vault(key_path=...)` で保存先を注入できる（既定は従来の互換パス）
+- Windows の保護は `CryptProtectData` を ctypes 経由で呼ぶ（追加依存なし）。
+  ファイル先頭の `JPPMK1` マーカーで「保護済み」を判定し、
+  別ユーザー / 別 PC では復号に失敗する（黙って別鍵を作らない）
+- restore は「Vault の隣の `key.bin`」→「`file-key.bin`」の順に探す
+  （旧バージョンの出力を壊さないため）
+- e2e（`scripts/e2e_files.py`）で「出力フォルダに鍵が無い」「DPAPI 保護済み」を実測
+
 ### 復元の頑健性
 
 LLM はプレースホルダを崩すことがあります（全角括弧にする、空白を入れる）。
@@ -244,6 +266,33 @@ Origin: https://evil.example → 403
 (Origin なし)                → 200
 ```
 
+### Host 検証（DNS リバインディング対策）
+
+`Origin` だけでは足りません。悪意あるサイトが DNS を `127.0.0.1` に
+向けると、ブラウザは**ローカルプロキシへ**リクエストを送ります。
+このとき `Origin` は攻撃者サイトのままなので上のガードで止まりますが、
+`Host` 検証も重ねて多層化します。
+
+```
+Host: 127.0.0.1:8787 / localhost / [::1] / tauri.localhost → 200
+その他の Host                                              → 403
+```
+
+- 判定は `request.url.hostname`（ポート・角括弧を除去済み）
+- **`127.0.0.1` 等のループバック bind 時のみ**厳格に判定する。
+  `0.0.0.0` bind では LAN の実 IP が `Host` に載るため列挙が成立しない
+- `Host` ヘッダの無い HTTP/1.0 的な要求は通す（CLI / SDK を壊さない）
+
+### 監査ログ（`audit.py`）
+
+「いつ・何件・どの種別をマスクしたか」を JSONL に残します（既定 OFF）。
+
+- 記録するのは 時刻 / 操作種別 / セッションの SHA-256 先頭 12 桁 / 件数 / 種別名
+- **原文・検出値・ファイルパス・ファイル名は記録しない**（漏洩経路にしない）
+- 書込みはスレッドロック付き・1 MB でローテーション・失敗しても本体は止めない
+- `GET /admin/api/audit` と `jp-pii-mask audit` が同じ内容を返す
+  （GUI と CLI で別の表示ロジックを持たない）
+
 ---
 
 ## 5. ファイルマスク（`files.py` / `ocr.py`）
@@ -257,7 +306,8 @@ Origin: https://evil.example → 403
 3. 検出した個人情報を文字座標に紐づけ、矩形にまとめて黒塗り
 4. **個人情報が 1 件も無いページはベクタのまま原文から複製**（画質を落とさない）
 5. 出力は 3 点セット: `.masked.pdf`（本体）、`.masked.txt`（プレースホルダ文）、
-   `.masked.vault`（対応表、AES-GCM）
+   `.masked.vault`（対応表、AES-GCM。鍵は `~/.jp-pii-mask/file-key.bin` で
+   **出力フォルダには置かない**）
 
 個人情報のあったページはページ全体を画像化するため、出力 PDF の
 **テキスト層から個人情報をコピーで取り出せません**。
@@ -279,6 +329,10 @@ PDF の文字座標は左下原点、画像は左上原点。さらに `/Rotate`
 - `--ocr auto`（既定）はテキスト層が実質空のページだけ OCR する
 - OCR 不可の環境では、テキスト層のあるページだけ処理して警告を出す
 - 読み取り精度がそのまま黒塗り精度になるため、目視確認を推奨（README 制限事項）
+- **縦書きは読めない（実測）** — Windows 標準 OCR は横書き前提のため、
+  縦組みの漢字・数字は判読不能な文字列になる（例: 縦組みの `09012345678` が
+  `0C)01っ乁E一わC.C`）。これは「検出できず黒塗りされない」に直結するため、
+  縦書き文書は現状の対象外とし、README の制限事項に明記している
 
 ### 復元の対象
 
@@ -333,8 +387,10 @@ UnicodeEncodeError: 'cp932' codec can't encode character '\U0001f319'
 | プロキシ | `test_proxy.py` | **実際の偽上流サーバ**を立てて実 HTTP で検証 |
 | CLI | `test_cli.py` | cp932 環境で落ちないことを含む |
 | ファイル | `test_files.py` | テキスト層除去・黒塗り画素・`/Rotate` の位置を実測 |
-| 疎通確認 | `scripts/e2e_live.py` | 実プロセス 2 つ + 実 HTTP で 21 項目 |
-| ファイル疎通 | `scripts/e2e_files.py` | CLI を実行し PDF・スキャン PDF・画像を 34 項目で確認 |
+| 監査ログ | `test_audit.py` | 記録内容・ローテーション・無効化・書込み失敗の扱い |
+| 検出精度 | `eval/` + `scripts/eval_detection.py` | 19 文書・75 ラベルの再現率・適合率を計測（下限 95% を `--check` で判定） |
+| 疎通確認 | `scripts/e2e_live.py` | 実プロセス 2 つ + 実 HTTP で 26 項目 |
+| ファイル疎通 | `scripts/e2e_files.py` | CLI を実行し PDF・スキャン PDF・画像を 37 項目で確認（鍵の分離を含む） |
 
 特に重視しているのは:
 
@@ -350,4 +406,8 @@ UnicodeEncodeError: 'cp932' codec can't encode character '\U0001f319'
   別プロセス化か、軽量モデルの同梱を検討
 - **人名辞書の拡張** — 未知の姓への対応。読み辞書の導入
 - **段階的マスキング** — 「氏名は残すが番号は消す」のような種別ごとの制御
-- **監査ログ** — 誰がいつ何件マスクしたか（原文を含めずに）
+- **評価コーパスの拡充** — 現状 19 文書・75 ラベル。実文書由来の
+  数百件規模へ広げ、種別ごとの下限を CI で固定する
+- **監査ログの法人向け拡張** — SIEM への転送、端末識別（現状は
+  セッションのハッシュのみで「誰が」は記録しない）
+- **鍵のローテーション** — 現状は生成のみ。再暗号化の手順を整備する

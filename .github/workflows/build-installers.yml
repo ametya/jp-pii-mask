@@ -25,6 +25,9 @@ on:
       - 'desktop/**'
       - 'jp_pii_mask/**'
       - 'scripts/**'
+      - 'eval/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - 'インストーラを作る.*'
       - '.github/workflows/**'
 

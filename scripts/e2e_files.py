@@ -376,6 +376,23 @@ def main() -> int:
             check("検出のあったページが画像化された", result["pages_masked"] == 1)
             check_common_outputs("digital", result, PII_VALUES)
 
+            # 鍵は出力フォルダに置かず、ユーザー領域に DPAPI 保護で置く
+            outdir = Path(result["masked"]).parent
+            home = workdir / "home"
+            check(
+                "digital: 出力フォルダに key.bin が作られない (鍵の分離)",
+                not (outdir / "key.bin").exists(),
+            )
+            key_file = home / "file-key.bin"
+            check("digital: ユーザー領域に file-key.bin が作られる", key_file.is_file())
+            if key_file.is_file():
+                key_blob = key_file.read_bytes()
+                check(
+                    "digital: 鍵が DPAPI で保護されている",
+                    key_blob.startswith(b"JPPMK1") and len(key_blob) != 32,
+                    f"{len(key_blob)} bytes",
+                )
+
             # 画素で確認: 電話番号の位置が黒く塗られている
             masked_image = render_pdf_page(Path(result["masked"]), 0, 200)
             box = find_text_box(digital_pdf, "090-1234-5678", 200)
