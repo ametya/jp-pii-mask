@@ -63,7 +63,7 @@ Python 側の実装・検証を担当した親エージェント（あなた）�
 
 | 旧 1.1 の項目 | 新しい状況 | 根拠 |
 | --- | --- | --- |
-| PyInstaller でサイドカーの単一実行ファイルが生成できること | **検証済み（PASS）** | `desktop/src-tauri/binaries/jp-pii-mask-server-x86_64-pc-windows-msvc.exe` を実際に生成（50.4 MB） |
+| PyInstaller でサイドカーの単一実行ファイルが生成できること | **検証済み（PASS）** | `desktop/src-tauri/binaries/jp-pii-mask-server-x86_64-pc-windows-msvc.exe` を実際に生成（50.5 MB） |
 | サイドカーが起動して `/healthz` に応答すること | **検証済み（PASS）** | 生成した .exe を実プロセスで起動し、実 HTTP で 26/26 PASS |
 | サイドカー探索規則・起動引数の整合 | **検証済み（PASS）** | `serve --host --port --upstream` が想定どおり動作 |
 | `src/main.js` の構文 | **検証済み（PASS）** | `node --check` が通過 |

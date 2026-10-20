@@ -37,6 +37,27 @@ permissions:
 
 jobs:
   build:
+    # 署名用の secrets。設定していない場合は空文字になり、
+    # ワークフローは従来どおり「未署名」で最後まで通る。
+    #
+    # Windows (任意):
+    #   WINDOWS_CERTIFICATE          .pfx を base64 にしたもの
+    #   WINDOWS_CERTIFICATE_PASSWORD .pfx のパスワード
+    # macOS (任意):
+    #   APPLE_CERTIFICATE            Developer ID 証明書 (.p12) を base64 にしたもの
+    #   APPLE_CERTIFICATE_PASSWORD   .p12 のパスワード
+    #   APPLE_SIGNING_IDENTITY       例: "Developer ID Application: NAME (TEAMID)"
+    #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+    #                                notarization 用 (APPLE_PASSWORD は app 用パスワード)
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +121,44 @@ jobs:
           "$PY" desktop/scripts/build-installer.py --check-only
 
       # ----------------------------------------------------------------
+      # 3.5) Windows: コード署名証明書を取り込む (任意)
+      #
+      #      WINDOWS_CERTIFICATE (base64 の .pfx) があるときだけ動く。
+      #      証明書ストアに入れて thumbprint を設定ファイルに書き、
+      #      次のビルドで --config として渡す。
+      # ----------------------------------------------------------------
+      - name: Windows 証明書の取り込み (署名する場合のみ)
+        id: signing
+        if: matrix.platform == 'windows-latest' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfx,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          )
+          $pass = ConvertTo-SecureString `
+            -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate `
+            -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pass
+          Remove-Item $pfx -Force
+          Write-Host "証明書を取り込みました: $($cert.Thumbprint)"
+          $overlay = Join-Path $env:RUNNER_TEMP "signing.json"
+          @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $cert.Thumbprint
+                digestAlgorithm = "sha256"
+                timestampUrl = "http://timestamp.digicert.com"
+              }
+            }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Path $overlay -Encoding utf8
+          "config=$overlay" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      # macOS の署名・notarization は Tauri が環境変数
+      # (APPLE_CERTIFICATE 等。job の env で設定済み) を直接読む。
+
+      # ----------------------------------------------------------------
       # 4) GUI をビルドしてインストーラを作る
       #
       #    projectPath: Tauri プロジェクトのルート (src-tauri の親)。
@@ -123,12 +182,13 @@ jobs:
             - Windows: `*-setup.exe` または `*.msi`
             - macOS: `*.dmg`
 
-            ⚠️ 署名を行っていないため、初回起動時に OS の警告が出ます。
+            ⚠️ 署名を行っていないビルドでは、初回起動時に OS の警告が出ます。
             - Windows: 「詳細情報」→「実行」
             - macOS: 右クリック →「開く」(またはシステム設定 → プライバシーとセキュリティ)
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          # 署名証明書が設定されている場合のみ --config で署名設定を渡す。
+          args: ${{ matrix.args }} ${{ steps.signing.outputs.config != '' && format('--config "{0}"', steps.signing.outputs.config) || '' }}
 
       # ----------------------------------------------------------------
       # 5) インストーラを成果物として保存

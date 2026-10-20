@@ -471,6 +471,14 @@ def _page_source(
         return ocr_source, image, True
     if ocr_mode == "on" and not source.text.strip():
         raise FileMaskError(f"{page_number} ページ目: OCR で文字を認識できませんでした")
+    if not source.text.strip():
+        # OCR も実行したが文字が 1 つも取れず、テキスト層も無いページ。
+        # 黙って素通しすると「検出済み」に見えてしまうため警告する
+        # (縦書きは Windows OCR が読めない。docs/ARCHITECTURE.md 参照)。
+        result.warnings.append(
+            f"{page_number} ページ目: OCR でも文字を認識できませんでした "
+            "(縦書き・かすれ・解像度不足の可能性。このページは検出できません)"
+        )
     return source, image, False
 
 

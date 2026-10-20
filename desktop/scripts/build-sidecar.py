@@ -76,6 +76,21 @@ RUNTIME_DEPS = [
     "httpx>=0.27",
 ]
 
+# サイドカーに同梱しない任意依存。
+# detect.py は NER を try/except 内で import するが、PyInstaller は
+# それを静的に検出するため、開発環境に spaCy / GiNZA が入っていると
+# 実行ファイルが数百 MB に膨れる (実測: 50 MB -> 184 MB)。
+# NER はサイドカーで使わない (モデルを同梱しない方針) ので明示的に除外する。
+EXCLUDE_MODULES = [
+    "spacy",
+    "thinc",
+    "ginza",
+    "ja_ginza",
+    "sudachipy",
+    "sudachidict_core",
+    "torch",
+]
+
 
 def container_of_copy() -> Path:
     """このスクリプトが置かれている desktop/ の親 (= リポジトリルート) を返す。"""
@@ -212,6 +227,8 @@ def main() -> int:
     ]
     for hidden in HIDDEN_IMPORTS:
         pyi_cmd += ["--hidden-import", hidden]
+    for excluded in EXCLUDE_MODULES:
+        pyi_cmd += ["--exclude-module", excluded]
     pyi_cmd += ["--console", str(entry_py)]
     run(pyi_cmd)
 

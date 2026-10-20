@@ -482,6 +482,23 @@ class TestOcrPaths:
         assert result.warnings
         assert src.read_bytes() == result.masked_path.read_bytes()
 
+    def test_scanned_pdf_with_unreadable_ocr_warns(self, tmp_path, monkeypatch):
+        # 縦書き・かすれ等で OCR が 1 文字も返せないページを黙って
+        # 素通しすると「検出済み」に見えてしまうため警告する。
+        src = tmp_path / "unreadable.pdf"
+        Image.new("RGB", (600, 200), "white").save(src, format="PDF", resolution=150)
+
+        import jp_pii_mask.files as files_mod
+
+        monkeypatch.setattr(files_mod, "ocr_image", lambda image: [])
+
+        result = mask_file(
+            src, None, detector=_make_detector(), vault=_make_vault(tmp_path), ocr="auto"
+        )
+
+        assert result.entities == 0
+        assert any("認識できませんでした" in w for w in result.warnings)
+
 
 class TestCli:
     @pytest.fixture(autouse=True)

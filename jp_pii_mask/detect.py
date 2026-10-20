@@ -25,6 +25,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from . import validators as V
 from .words import (
@@ -42,6 +43,54 @@ from .words import (
 __all__ = ["ENTITY_TYPES", "TYPE_LABELS", "Detector", "Entity"]
 
 log = logging.getLogger("jp_pii_mask.detect")
+
+# SudachiPy (GiNZA のトークナイザ) は 1 回の入力が約 49 KB までという制限がある。
+# これを超えるテキストを渡すと例外になり、**その文書の NER 検出が丸ごと
+# 失われる** (ルールベースだけで処理される)。長文でも取りこぼさないよう、
+# 文境界を優先して上限未満に分割し、断片ごとに NER をかけて結果を統合する。
+_NER_MAX_BYTES = 45_000
+
+
+def _ner_chunks(text: str, limit: int = _NER_MAX_BYTES) -> Iterator[tuple[int, str]]:
+    """(オフセット, 断片) を返す。各断片は limit バイト (UTF-8) 以下。"""
+    offset = 0
+    buf = ""
+    buf_bytes = 0
+    # 句点・改行などの直後で切る (文の途中で切ると NER の精度が落ちるため)
+    for seg in re.split(r"(?<=[。．！？!?\n])", text):
+        seg_bytes = len(seg.encode("utf-8"))
+        if seg_bytes > limit:
+            if buf:
+                yield offset, buf
+                offset += len(buf)
+                buf, buf_bytes = "", 0
+            for piece in _hard_split(seg, limit):
+                yield offset, piece
+                offset += len(piece)
+            continue
+        if buf_bytes + seg_bytes > limit:
+            yield offset, buf
+            offset += len(buf)
+            buf, buf_bytes = "", 0
+        buf += seg
+        buf_bytes += seg_bytes
+    if buf:
+        yield offset, buf
+
+
+def _hard_split(text: str, limit: int) -> Iterator[str]:
+    """1 文だけで limit を超える場合の最終手段 (文字境界で刻む)。"""
+    start = 0
+    size = 0
+    for i, ch in enumerate(text):
+        b = len(ch.encode("utf-8"))
+        if size + b > limit:
+            yield text[start:i]
+            start = i
+            size = 0
+        size += b
+    if start < len(text):
+        yield text[start:]
 
 # ---------------------------------------------------------------------------
 # エンティティ種別
@@ -140,7 +189,7 @@ RE_POSTAL_PLAIN = re.compile(r"(?<!\d)(\d{3})(\d{4})(?!\d)")
 # 行が連結される。空白は半角/全角スペースに限定する。
 RE_PHONE = re.compile(
     r"(?<![\d０-９])"
-    r"(0(?:\d|[-‐‑‒–—―ー－()（） 　]){9,16})"
+    r"([0０](?:\d|[-‐‑‒–—―ー－()（） 　]){9,16})"
     r"(?![\d０-９])"
 )
 
@@ -216,13 +265,17 @@ class _OrgPatterns:
 
     def __init__(self) -> None:
         legal = "|".join(re.escape(x) for x in ORG_LEGAL_FORMS + ORG_PREFIX_FORMS)
+        # 法人格と名称の間の空白は横方向のみ許可する。
+        # 改行を許すと「支払先一覧\n\n株式会社サンプル商事」の
+        # 見出し行を名称として飲み込む。
+        hspace = r"[ \t\u3000]*"
         # 前置形: 「株式会社サンプル商事」。
         # 法人格の直前が単語構成文字でないことを要求する。
         # これが無いと「サンプル工業株式会社」の「株式会社」を前置形と誤認する。
-        self.prefix = re.compile(rf"(?<!\w)({legal})\s*([^{self._EXCL}]{{1,24}})")
+        self.prefix = re.compile(rf"(?<!\w)({legal}){hspace}([^{self._EXCL}]{{1,24}})")
         # 後置形: 「サンプル工業株式会社」。
         self.suffix = re.compile(
-            rf"([^{self._EXCL}{self._PARTICLES}]{{1,24}}?)\s*(?:{legal})"
+            rf"([^{self._EXCL}{self._PARTICLES}]{{1,24}}?){hspace}(?:{legal})"
         )
 
 
@@ -253,12 +306,23 @@ def _normalize(text: str) -> str:
 
 
 def _has_context(text: str, start: int, end: int, kind: str, window: int = 12) -> bool:
-    """検出箇所の前後に文脈キーワードがあるか。"""
+    """検出箇所の前後に文脈キーワードがあるか。
+
+    左側 (キーワードが値の前に来る形) は行をまたいでもよい。
+    「生年月日:\\n1992年9月30日」のような帳票を拾うため。
+
+    右側 (キーワードが値の後ろに来る形) は同じ行に限定する。
+    次の行の見出しを拾うと「入社日: 2019年4月1日\\n生年月日: …」の
+    入社日まで生年月日と誤判定するため。
+    """
     kws = CONTEXT_KEYWORDS.get(kind, ())
     if not kws:
         return False
     left = text[max(0, start - window):start]
     right = text[end:end + window]
+    nl = right.find("\n")
+    if nl != -1:
+        right = right[:nl]
     around = left + right
     return any(kw in around for kw in kws)
 
@@ -662,12 +726,20 @@ class Detector:
     # -- 第 3 層: NER ------------------------------------------------------
     def _detect_ner(self, text: str) -> Iterator[Entity]:
         assert self._nlp is not None
-        try:
-            doc = self._nlp(text)
-        except Exception as exc:
-            # NER の失敗は「取りこぼし」を意味する。黙殺せず記録する。
-            log.warning("NER の推論に失敗しました (このテキストは NER なしで処理します): %s", exc)
-            return
+        for offset, chunk in _ner_chunks(text):
+            try:
+                doc = self._nlp(chunk)
+            except Exception as exc:
+                # NER の失敗は「取りこぼし」を意味する。黙殺せず記録する。
+                log.warning(
+                    "NER の推論に失敗しました (この部分は NER なしで処理します): %s", exc
+                )
+                continue
+            yield from self._ner_entities(chunk, doc, offset)
+
+    @staticmethod
+    def _ner_entities(text: str, doc: Any, offset: int) -> Iterator[Entity]:
+        """1 断片の NER 結果を、文書全体の座標に直して返す。"""
         mapping = {
             "Person": "PERSON",
             "PERSON": "PERSON",
@@ -685,7 +757,7 @@ class Detector:
             start, end = ent.start_char, ent.end_char
             if end <= start:
                 continue
-            yield Entity(etype, start, end, text[start:end], 0.72, "ner")
+            yield Entity(etype, offset + start, offset + end, text[start:end], 0.72, "ner")
 
     # -- 重複解決 ---------------------------------------------------------
     def _resolve_overlaps(self, entities: Iterable[Entity]) -> list[Entity]:

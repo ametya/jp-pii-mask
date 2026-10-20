@@ -292,6 +292,79 @@ class TestBoundaryRegressions:
         ents = det.detect("山本健太様")
         assert texts_of(ents, "PERSON") == ["山本健太"]
 
+    def test_fullwidth_phone(self, det):
+        # 先頭が全角の「０」の電話番号 (紙の帳票の全角入力)
+        ents = det.detect("電話番号：０９０－１２３４－５６７８")
+        assert texts_of(ents, "PHONE") == ["０９０－１２３４－５６７８"]
+        assert "POSTAL_CODE" not in types_in(ents)
+
+    def test_org_suffix_does_not_cross_newline(self, det):
+        # 見出し行と法人名が新行だけを挟んで隣接しても結合しない
+        ents = det.detect("支払先一覧\n\n株式会社サンプル商事に支払います。")
+        assert texts_of(ents, "ORGANIZATION") == ["株式会社サンプル商事"]
+
+    def test_dob_context_does_not_leak_from_next_line(self, det):
+        # 「入社日」の値が次行の「生年月日」見出しを文脈として拾わない
+        ents = det.detect("入社日: 2019年4月1日\n生年月日: 1992年9月30日")
+        assert texts_of(ents, "DATE_OF_BIRTH") == ["1992年9月30日"]
+
+    def test_dob_context_on_previous_line_still_works(self, det):
+        # 帳票で見出しと値が行をまたぐ形は文脈として有効のまま
+        ents = det.detect("生年月日:\n1992年9月30日")
+        assert texts_of(ents, "DATE_OF_BIRTH") == ["1992年9月30日"]
+
+
+class TestNerChunking:
+    """SudachiPy の入力上限 (約 49 KB) を超える長文でも NER を失わないための分割。
+
+    修正前は上限超えで例外になり、**その文書の NER 検出が丸ごと消えていた**
+    (警告ログだけが残る)。分割そのものはモデル不要なので常に検証できる。
+    """
+
+    def test_short_text_is_single_chunk(self):
+        from jp_pii_mask.detect import _ner_chunks
+
+        assert list(_ner_chunks("短い文章です。")) == [(0, "短い文章です。")]
+
+    def test_chunks_cover_text_without_loss(self):
+        from jp_pii_mask.detect import _ner_chunks
+
+        text = "本日の会議では来期の計画について話しました。\n" * 3000
+        chunks = list(_ner_chunks(text))
+        assert len(chunks) > 1
+        assert "".join(chunk for _, chunk in chunks) == text
+        offset = 0
+        for off, chunk in chunks:
+            assert off == offset
+            assert text[off : off + len(chunk)] == chunk
+            assert len(chunk.encode("utf-8")) <= 45_000
+            offset += len(chunk)
+
+    def test_single_long_sentence_is_hard_split(self):
+        from jp_pii_mask.detect import _ner_chunks
+
+        text = "あ" * 60_000  # 句点が無い = 文境界で切れない
+        chunks = list(_ner_chunks(text))
+        assert len(chunks) > 1
+        assert "".join(chunk for _, chunk in chunks) == text
+        assert all(len(chunk.encode("utf-8")) <= 45_000 for _, chunk in chunks)
+
+    def test_ner_entities_beyond_sudachi_limit(self):
+        pytest.importorskip("ja_ginza")
+        from jp_pii_mask.detect import Detector
+
+        det = Detector(use_ner=True)
+        if not det.ner_available:
+            pytest.skip("NER モデルを読み込めない環境")
+        filler = "本日の会議では来期の計画について話しました。\n" * 2000  # 約 105 KB
+        tail = "株式会社サンプル商事の綾小路麗華に連絡してください。"
+        text = filler + tail
+        ents = list(det._detect_ner(text))
+        assert ents, "長文で NER が丸ごと落ちている"
+        for e in ents:
+            assert text[e.start : e.end] == e.text, "断片分割後の座標がずれている"
+        assert any(e.start > 45_000 for e in ents), "後半の断片が処理されていない"
+
 
 class TestCustomTerms:
     def test_custom_term_via_proxy_helper(self):

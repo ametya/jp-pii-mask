@@ -29,6 +29,7 @@
 - [設定](#設定)
 - [デスクトップ GUI](#デスクトップ-gui)
 - [検証状況](#検証状況)
+- [性能](#性能)
 - [制限事項](#制限事項)
 - [ライセンスと商用利用](#ライセンスと商用利用)
 - [開発](#開発)
@@ -425,6 +426,22 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 - タグ（例: `v0.1.0`）を push すると、GitHub の Release に下書きとして添付
 - 手動実行でも成果物（Artifacts）からダウンロード可能
 
+#### コード署名（任意）
+
+証明書 **を持っている場合だけ**、リポジトリの
+Settings → Secrets and variables → Actions に次を登録すると、
+ワークフローが自動で署名（macOS は notarization も）します。
+未登録なら従来どおり未署名でビルドされ、起動時に OS の警告が出ます。
+
+| Secret | 内容 |
+| --- | --- |
+| `WINDOWS_CERTIFICATE` | コード署名用 `.pfx` を base64 化した文字列 |
+| `WINDOWS_CERTIFICATE_PASSWORD` | `.pfx` のパスワード |
+| `APPLE_CERTIFICATE` | Developer ID 証明書（`.p12`）を base64 化した文字列 |
+| `APPLE_CERTIFICATE_PASSWORD` | `.p12` のパスワード |
+| `APPLE_SIGNING_IDENTITY` | 例: `Developer ID Application: 名前 (TEAMID)` |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | notarization 用（`APPLE_PASSWORD` は app 用パスワード） |
+
 > **Rust が無くても製品の中核機能はすべて使えます。**
 > ブラウザで開く制御パネル (`http://127.0.0.1:8787/`) が同じ操作系を提供します。
 
@@ -436,14 +453,17 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 
 | 対象 | 結果 |
 |---|---|
-| 自動テスト | **211 passed / 1 skipped**（`python -m pytest`） |
+| 自動テスト | **220 passed / 1 skipped**（`python -m pytest`） |
 | Lint（ruff） | **All checks passed** |
-| 検出精度（評価コーパス） | **再現率 100% / 適合率 100%**（19 文書・75 ラベル。`python scripts/eval_detection.py`） |
+| 検出精度（評価コーパス） | **再現率 100% / 適合率 100%**（29 文書・107 ラベル。`python scripts/eval_detection.py`） |
+| 遅延（ルールベース） | **約 50 万文字/秒**（12,371 文字の往復 25 ms / 61,845 文字 126 ms。`python scripts/benchmark.py`） |
+| 遅延（NER 有効時） | 約 5,000 文字/秒（1,266 文字 231 ms / 12,371 文字 2.3 s。長文は NER が支配的） |
+| NER（任意依存） | **Python 3.12 で動作確認**（ja-ginza 5.3.0 / spaCy 3.8.16。モデルの初回ロード約 2.4 s） |
 | 疎通確認（実プロセス・実 HTTP） | **26/26 PASS**（`python scripts/e2e_live.py`） |
 | ファイルマスクの実通し確認（PDF・スキャン PDF・画像） | **37/37 PASS**（`python scripts/e2e_files.py`。実 OCR と黒塗り画素まで検証） |
 | CI（GitHub Actions） | **ruff / pytest / 精度の下限チェック / 疎通 / 依存の脆弱性スキャン**（`.github/workflows/test.yml`） |
 | 回転ページ付き PDF（`/Rotate` 90/180/270）の黒塗り位置 | **PASS**（画素の突き合わせで検証、`tests/test_files.py`） |
-| 単一実行ファイル化（PyInstaller） | **成功**（50.4 MB、起動と API 応答を実測） |
+| 単一実行ファイル化（PyInstaller） | **成功**（50.5 MB、起動と API 応答を実測） |
 | 上記実行ファイルでの疎通確認 | **26/26 PASS**（`--exe` で検証） |
 | マスク → 送信 → 復元 | PASS（上流に原文が届かないことを実測） |
 | ストリーミング逐次復元 | PASS（チャンク分割耐性を含む） |
@@ -492,6 +512,26 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
    パターンが未配線、(4) マイナンバーカード番号が生成されない、
    (5) 法人名が助詞「の」で人名を飲み込む、を修正し **100% / 100%** に。
    いずれも回帰テストを追加済みです。
+10. **長文で NER が丸ごと無効化される** — ベンチマークで発覚。NER の
+    トークナイザ（SudachiPy）は 1 回の入力が約 49 KB までという制限があり、
+    これを超えると例外になって**その文書の NER 検出がすべて消えていました**
+    （警告ログだけが残る）。文境界で 45 KB ずつに分割して断片ごとに NER を
+    かけ、座標を文書全体に補正する方式に修正。分割の境界・座標を検証する
+    回帰テストを追加しました。
+11. **コーパス拡充 (19 → 29 文書) で見つかった境界バグ 3 件** — 全角数字・
+    帳票レイアウトの文書を 10 件追加して計測したところ 98.1% / 97.2% に低下。
+    (1) 電話番号パターンの先頭が半角 `0` 固定で全角の「０９０－…」を
+    見逃す、(2) 法人名の後置形が改行をまたいで「見出し行 + 株式会社…」を
+    1 つの法人名に飲み込む、(3) 生年月日の文脈判定が右側で改行を越え、
+    次行の「生年月日」見出しを前行の「入社日」に誤適用する、を修正。
+    右側の文脈は同じ行のみ、左側は行をまたいでよい（見出しと値が改行で
+    分かれる帳票のため）という規則に整理し、回帰テスト 4 件を追加しました。
+12. **NER を入れた開発環境で実行ファイルが 184 MB に膨れる** — NER の動作
+    確認のため開発環境に spaCy / GiNZA を入れたところ、PyInstaller が
+    `detect.py` の `try` 内の `import spacy` も静的に拾い、モデル辞書ごと
+    同梱して 50 MB → 184 MB に肥大。サイドカーは NER を使わないため、
+    ビルドスクリプトに除外モジュール（spaCy / GiNZA / SudachiPy 等）を
+    明示し、開発環境の内容に関わらず 50.5 MB で安定するようにしました。
 
 ### 自分で確かめる
 
@@ -499,6 +539,7 @@ python desktop/scripts/build-installer.py --skip-sidecar  # 内蔵サーバー�
 python -m pytest -q               # 単体・結合テスト
 python -m ruff check .            # Lint
 python scripts/eval_detection.py  # 検出精度の再計測（種別ごとの再現率・適合率）
+python scripts/benchmark.py       # 遅延の再計測（--ner で NER 有効時）
 python scripts/e2e_live.py        # 実プロセスでの疎通確認
 python scripts/e2e_files.py       # PDF・画像の実通し確認（OCR は Windows のみ）
 ```
@@ -512,6 +553,42 @@ python desktop/scripts/build-installer.py                # インストーラま
 
 ---
 
+## 性能
+
+「AI の応答を待つ時間に比べて誤差か」を判断するための実測値です。
+`python scripts/benchmark.py` で誰でも同じ計測を再現できます。
+
+測定環境: Intel Core i5-10400 / Python 3.12 / Windows 11
+
+### ルールベース（既定・NER なし）
+
+| シナリオ | 文字数 | PII | 往復 p50 | p95 | スループット |
+|---|---|---|---|---|---|
+| チャット 1 メッセージ | 155 | 5 件 | 0.37 ms | 0.38 ms | 約 42 万文字/秒 |
+| 会話 1 リクエスト | 1,266 | 23 件 | 2.7 ms | 2.7 ms | 約 48 万文字/秒 |
+| 長文メッセージ | 12,371 | 167 件 | 25.5 ms | 25.6 ms | 約 49 万文字/秒 |
+| 超長文（6 万文字） | 61,845 | 412 件 | 126 ms | 137 ms | 約 49 万文字/秒 |
+| 会話（PII なし） | 1,263 | 0 件 | 2.2 ms | 2.3 ms | 約 58 万文字/秒 |
+
+- 「往復」= 検出 + マスク + 復元。JSON 全体を走査する実際のリクエスト形
+  （payload）でもほぼ同じです（+1〜2 ms）
+- 一般的なチャット（数百〜数千文字）では **1〜3 ms**。AI の応答待ち（通常
+  1〜10 秒）に比べて無視できる範囲です
+
+### NER 有効時（任意）
+
+| シナリオ | 文字数 | 往復 p50 |
+|---|---|---|
+| 会話 1 リクエスト | 1,266 | 231 ms |
+| 長文メッセージ | 12,371 | 2.3 s |
+| 超長文（6 万文字） | 61,845 | 12.4 s |
+
+- NER は **約 5,000 文字/秒**。長文では支配的になるため、既定では OFF です
+- GiNZA は重いため、モデルの初回ロード（約 2.4 s）は常駐プロセスの
+  起動時に一度だけ行います
+
+---
+
 ## 制限事項
 
 正直に書きます。現状の制限です。
@@ -520,7 +597,9 @@ python desktop/scripts/build-installer.py                # インストーラま
   実測済みですが、トレイアイコンの表示やウィンドウ操作は目視確認が必要です
   （`desktop/VERIFY.md` のステップ E）
 - **NER は任意** — GiNZA 未導入時はルールベースのみ。人名・法人名の再現率は
-  辞書依存で、未知の姓や難読名は取りこぼす可能性があります
+  辞書依存で、未知の姓や難読名は取りこぼす可能性があります。NER を有効に
+  すると長文で秒単位の遅延が加わります（約 5,000 文字/秒。SudachiPy の
+  約 49 KB 入力上限で長文が丸ごと無効化される問題は分割処理で解消済み）
 - **ひらがなのみの人名** — 敬称が付かない場合は検出しません（誤検出との trade-off）
 - **プロキシ経由の画像・PDF** — チャットへの添付など `multipart/form-data` は
   今もマスクせず素通しします（見えていない転送を残さないため、
@@ -532,7 +611,9 @@ python desktop/scripts/build-installer.py                # インストーラま
   処理後は黒塗り結果を必ず目視確認してください
 - **縦書き（縦組み）は非対応** — Windows 標準 OCR は横書き専用です。
   実測では縦組みの数字列が判読不能な文字列になり、**黒塗りされずに残ります**。
-  縦書きの文書は現状の `file mask` の対象外と考えてください（段組みは未検証）
+  縦書きの文書は現状の `file mask` の対象外と考えてください（段組みは未検証）。
+  なお、OCR が 1 文字も読めなかったページは黙って素通しせず
+  警告を表示します（見逃しに気づけるようにするため）
 - **完全な保証ではない** — 「検出漏れゼロ」を保証するものではありません。
   機密性の高い用途では `redact_only` や送信前の目視確認を併用してください
 - **復元はプレースホルダの再出現に依存** — モデルがプレースホルダを大きく書き換えた
@@ -570,6 +651,7 @@ python -m pip install -e ".[dev]"
 python -m pytest -q                    # テスト
 python -m ruff check .                 # Lint
 python scripts/eval_detection.py       # 検出精度の計測（--check で下限チェック）
+python scripts/benchmark.py            # 遅延の計測（--ner / --json）
 python scripts/e2e_live.py             # 疎通確認
 python scripts/e2e_files.py            # PDF・画像の実通し確認（OCR は Windows のみ）
 
@@ -611,18 +693,21 @@ docs/             設計・ライセンス・商用化の検討資料
 - [x] 可逆マスキング（Vault・暗号化・セッション分離）
 - [x] OpenAI / Anthropic 互換プロキシ（ストリーミング対応）
 - [x] 制御パネル
-- [x] テスト（211 件）と実プロセス・実ファイル疎通確認
+- [x] テスト（220 件）と実プロセス・実ファイル疎通確認
 - [x] PDF・画像ファイルのローカルマスキング（Windows OCR 対応）
 - [x] 検出精度の評価コーパスと下限チェック（`eval/`、CI で自動計測）
+- [x] コーパス拡充と境界バグ修正（29 文書・107 ラベル。全角数字・帳票レイアウト対応）
 - [x] ファイル処理の鍵を分離（`file-key.bin` + Windows DPAPI 保護）
 - [x] 監査ログ（操作の記録。原文は含めない）
 - [x] Host ヘッダ検証（DNS リバインディング対策）
 - [x] CI（ruff / pytest / 精度 / 疎通 / 依存の脆弱性スキャン・SBOM）
 - [x] デスクトップ GUI のビルド検証（Rust 環境でビルド・インストーラ生成）
+- [x] 遅延の実測ベンチマーク（`scripts/benchmark.py`。ルールベース約 50 万文字/秒）
+- [x] NER 有効時の検証（Python 3.12 + ja-ginza 5.3.0。長文の分割処理を含む）
 - [ ] 縦書き文書への対応（Windows OCR は縦書き非対応と実測済み。
   別 OCR の併用か、行分割の自前実装が必要。段組みも未検証）
 - [ ] 署名済みインストーラ（macOS notarization / Windows コード署名）
-- [ ] NER の既定同梱
+- [ ] NER の既定同梱（現状は任意インストール `.[ner]`）
 - [ ] 評価コーパスの拡充（実文書から数百件規模へ）
 - [ ] ブラウザ拡張（Web 版 ChatGPT / Claude への入力フック）
 
