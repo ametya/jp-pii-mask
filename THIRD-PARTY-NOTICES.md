@@ -90,6 +90,15 @@
 > `winsdk` は OS 内蔵の Windows.Media.Ocr を呼び出すだけで、
 > 認識処理を外部サービスへ送信しません。
 
+### Tesseract OCR（任意・別途インストール）
+- License: Apache-2.0
+- Source: https://github.com/tesseract-ocr/tesseract
+- Copyright (c) Google Inc., Tesseract OCR contributors
+
+> 本プロジェクトには同梱しません。利用者が導入した場合のみ、ローカルの
+> 子プロセスとして呼び出します。`jpn` / `jpn_vert` の学習データは
+> tessdata_best（Apache-2.0）を利用できます。
+
 ---
 
 ## デスクトップ GUI（`desktop/`）

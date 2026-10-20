@@ -70,6 +70,12 @@ class TestPhone:
         ents = det.detect("お問い合わせは0120-123-456まで。")
         assert "PHONE" in types_in(ents)
 
+    def test_digits_separated_by_spaces(self, det):
+        # OCR (特に縦書き) は 1 文字ずつ空白を挟むことがある。
+        # 繰り返し上限が小さいと桁の途中で切れて未検出になる。
+        ents = det.detect("電話番号: 0 9 0 1 2 3 4 5 6 7 8")
+        assert texts_of(ents, "PHONE") == ["0 9 0 1 2 3 4 5 6 7 8"]
+
 
 class TestMyNumber:
     def test_detects_valid_with_context(self, det):

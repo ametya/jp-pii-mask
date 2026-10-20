@@ -10,7 +10,7 @@ AI に読ませたいが、個人情報は渡したくない」といったケ�
 入力:
 
   - PDF (テキスト層あり) — 文字単位の座標を取り、検出位置を黒塗り
-  - PDF (スキャン / 画像のみ) — ページを画像化し、Windows OCR で
+  - PDF (スキャン / 画像のみ) — ページを画像化し、OCR で
     文字を認識してから黒塗り
   - 画像 (PNG / JPEG / BMP / WebP / TIFF) — OCR して黒塗り
 
@@ -29,7 +29,8 @@ AI に読ませたいが、個人情報は渡したくない」といったケ�
 
   - マスク済みファイル自体の復元 (画像化するため不可逆)。
     復元はテキスト (.txt) に対して行う。
-  - OCR は Windows の標準 OCR のみ (winsdk は任意依存)。
+  - OCR は Windows 標準 OCR を主系とし、任意で導入された Tesseract も
+    使う (縦書き対応)。どちらもローカルで動き、クラウド送信はしない。
   - 「検出漏れゼロ」は保証しない。
 """
 
@@ -47,7 +48,14 @@ from typing import Any
 from .config import config_dir
 from .detect import Detector, Entity
 from .masking import Masker, UnmaskResult
-from .ocr import OCR_MISSING_HINT, OcrUnavailable, ocr_available, ocr_image
+from .ocr import (
+    OCR_MISSING_HINT,
+    OcrUnavailable,
+    ocr_available,
+    ocr_image,
+    ocr_image_tesseract,
+    tesseract_available,
+)
 from .vault import Vault
 
 log = logging.getLogger("jp_pii_mask.files")
@@ -449,7 +457,8 @@ def _page_source(
             )
         return source, None, False
 
-    if not ocr_available():
+    windows_ocr = ocr_available()
+    if not windows_ocr and not tesseract_available():
         if ocr_mode == "on" or text_length == 0:
             raise FileMaskError(f"{page_number} ページ目: {OCR_MISSING_HINT}")
         result.warnings.append(
@@ -460,7 +469,14 @@ def _page_source(
 
     image = _render_page(page, dpi)
     try:
-        ocr_source = _source_from_ocr_lines(ocr_image(image))
+        if windows_ocr:
+            ocr_source = _source_from_ocr_lines(ocr_image(image))
+        else:
+            ocr_source = _source_from_ocr_lines(ocr_image_tesseract(image))
+            result.warnings.append(
+                f"{page_number} ページ目: Windows 標準 OCR が使えないため "
+                "Tesseract で認識しました"
+            )
     except OcrUnavailable as exc:
         if ocr_mode == "on":
             raise FileMaskError(f"{page_number} ページ目: OCR に失敗しました: {exc}") from exc
@@ -474,7 +490,7 @@ def _page_source(
     if not source.text.strip():
         # OCR も実行したが文字が 1 つも取れず、テキスト層も無いページ。
         # 黙って素通しすると「検出済み」に見えてしまうため警告する
-        # (縦書きは Windows OCR が読めない。docs/ARCHITECTURE.md 参照)。
+        # (縦書きで Tesseract 未導入の場合など。docs/ARCHITECTURE.md 参照)。
         result.warnings.append(
             f"{page_number} ページ目: OCR でも文字を認識できませんでした "
             "(縦書き・かすれ・解像度不足の可能性。このページは検出できません)"
@@ -487,6 +503,20 @@ def _pdf_bytes_from_image(image: Any, dpi: int) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PDF", resolution=dpi)
     return buffer.getvalue()
+
+
+def _tesseract_source_or_none(image: Any) -> PageSource | None:
+    """Tesseract で読み直す。認識できなければ None。"""
+    if not tesseract_available():
+        return None
+    try:
+        lines = ocr_image_tesseract(image)
+    except OcrUnavailable as exc:
+        log.debug("Tesseract での再認識に失敗: %s", exc)
+        return None
+    if not lines:
+        return None
+    return _source_from_ocr_lines(lines)
 
 
 def _mask_pdf(
@@ -518,6 +548,23 @@ def _mask_pdf(
             if used_ocr:
                 result.ocr_pages += 1
             entities = _detect_entities(detector, source.text, custom_terms)
+            if (
+                not entities
+                and used_ocr
+                and image is not None
+                and ocr_available()
+                and tesseract_available()
+            ):
+                # Windows OCR が文字を返しても、縦書きなどで文字化けして
+                # 個人情報ゼロになることがある。Tesseract で読み直し、
+                # 検出が多い方を採用する。
+                alt_source = _tesseract_source_or_none(image)
+                if alt_source is not None:
+                    alt_entities = _detect_entities(
+                        detector, alt_source.text, custom_terms
+                    )
+                    if alt_entities:
+                        source, entities = alt_source, alt_entities
             if entities:
                 if image is None:
                     image = _render_page(page, dpi)
@@ -579,16 +626,26 @@ def _mask_image(
             "画像のマスクには OCR が必要です (--ocr auto または --ocr on)。\n"
             "  " + OCR_MISSING_HINT
         )
-    if not ocr_available():
+    windows_ocr = ocr_available()
+    if not windows_ocr and not tesseract_available():
         raise FileMaskError(OCR_MISSING_HINT)
 
     with image_module.open(src) as raw:
         image = image_ops.exif_transpose(raw)
         image = image.convert("RGB")
-        source = _source_from_ocr_lines(ocr_image(image))
+        if windows_ocr:
+            source = _source_from_ocr_lines(ocr_image(image))
+        else:
+            source = _source_from_ocr_lines(ocr_image_tesseract(image))
     result.ocr_pages = 1
 
     entities = _detect_entities(detector, source.text, custom_terms)
+    if not entities and windows_ocr:
+        alt_source = _tesseract_source_or_none(image)
+        if alt_source is not None:
+            alt_entities = _detect_entities(detector, alt_source.text, custom_terms)
+            if alt_entities:
+                source, entities = alt_source, alt_entities
     out.parent.mkdir(parents=True, exist_ok=True)
     if entities:
         _draw_masks(image, source, entities)

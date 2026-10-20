@@ -65,7 +65,8 @@ ChatGPT や Claude に業務文書を貼り付けるとき、こんな情報が�
   プレースホルダが途中で分割されても壊れずに復元します。
 - **ローカル完結** — 検出も復元もあなたの PC 上で完結。原文を外部に送りません。
 - **PDF・画像ファイルも** — スキャンした請求書や写真も、黒塗りした本体と
-  復元用テキストをローカルで出力します（任意機能。OCR は Windows 標準を使用）。
+  復元用テキストをローカルで出力します（任意機能。OCR は Windows 標準、
+  縦書きは Tesseract を任意で併用）。
 - **監査しやすい** — 中核の依存は 5 つだけ。Vault（対応表）は AES-GCM で暗号化して保存。
 - **操作の記録（任意）** — 「いつ・何件・どの種別をマスクしたか」を JSONL で残せます。
   原文・検出値・ファイル名は記録しません（`audit_log=true` で有効化）。
@@ -183,6 +184,9 @@ jp-pii-mask file restore 回答.txt --vault 請求書.masked.vault
 - 個人情報があったページだけ画像化し、**テキスト層を除去**します
 - `--ocr auto`（既定）は、テキスト層が無い（＝スキャンの）ページだけ OCR します
 - OCR は Windows 標準 OCR（OS 内蔵）を使うため、クラウドへの送信はありません
+- 縦書きは Windows 標準 OCR では読めませんが、Tesseract（任意）が入っていれば
+  `jpn_vert` で読めます（`JP_PII_MASK_TESSERACT` で実行ファイル、
+  `JP_PII_MASK_TESSDATA` で学習データの場所を指定可能。詳細は「制限事項」）
 - 注意: **マスク済みファイル（PDF・画像）自体は復元できません**。
   復元できるのは `.masked.txt` のテキストだけです
 
@@ -453,14 +457,15 @@ Settings → Secrets and variables → Actions に次を登録すると、
 
 | 対象 | 結果 |
 |---|---|
-| 自動テスト | **220 passed / 1 skipped**（`python -m pytest`） |
+| 自動テスト | **221 passed / 4 skipped**（`python -m pytest`。skip は Tesseract 未導入時など） |
 | Lint（ruff） | **All checks passed** |
-| 検出精度（評価コーパス） | **再現率 100% / 適合率 100%**（29 文書・107 ラベル。`python scripts/eval_detection.py`） |
+| 検出精度（評価コーパス） | **再現率 100% / 適合率 100%**（46 文書・173 ラベル。`python scripts/eval_detection.py`） |
 | 遅延（ルールベース） | **約 50 万文字/秒**（12,371 文字の往復 25 ms / 61,845 文字 126 ms。`python scripts/benchmark.py`） |
 | 遅延（NER 有効時） | 約 5,000 文字/秒（1,266 文字 231 ms / 12,371 文字 2.3 s。長文は NER が支配的） |
 | NER（任意依存） | **Python 3.12 で動作確認**（ja-ginza 5.3.0 / spaCy 3.8.16。モデルの初回ロード約 2.4 s） |
 | 疎通確認（実プロセス・実 HTTP） | **26/26 PASS**（`python scripts/e2e_live.py`） |
 | ファイルマスクの実通し確認（PDF・スキャン PDF・画像） | **37/37 PASS**（`python scripts/e2e_files.py`。実 OCR と黒塗り画素まで検証） |
+| 縦書き OCR（Tesseract 任意） | **PASS**（`jpn_vert` で縦組みの電話番号を認識・黒塗りを実測。`tests/test_ocr_tesseract.py`） |
 | CI（GitHub Actions） | **ruff / pytest / 精度の下限チェック / 疎通 / 依存の脆弱性スキャン**（`.github/workflows/test.yml`） |
 | 回転ページ付き PDF（`/Rotate` 90/180/270）の黒塗り位置 | **PASS**（画素の突き合わせで検証、`tests/test_files.py`） |
 | 単一実行ファイル化（PyInstaller） | **成功**（50.5 MB、起動と API 応答を実測） |
@@ -526,12 +531,19 @@ Settings → Secrets and variables → Actions に次を登録すると、
     次行の「生年月日」見出しを前行の「入社日」に誤適用する、を修正。
     右側の文脈は同じ行のみ、左側は行をまたいでよい（見出しと値が改行で
     分かれる帳票のため）という規則に整理し、回帰テスト 4 件を追加しました。
+    その後さらに 17 文書（契約書・診療記録・給与 CSV・アクセスログ・
+    否例・OCR の数字空白など）を追加して **46 文書・173 ラベル** とし、
+    追加分は初回から 100% / 100% を維持しています。
 12. **NER を入れた開発環境で実行ファイルが 184 MB に膨れる** — NER の動作
     確認のため開発環境に spaCy / GiNZA を入れたところ、PyInstaller が
     `detect.py` の `try` 内の `import spacy` も静的に拾い、モデル辞書ごと
     同梱して 50 MB → 184 MB に肥大。サイドカーは NER を使わないため、
     ビルドスクリプトに除外モジュール（spaCy / GiNZA / SudachiPy 等）を
     明示し、開発環境の内容に関わらず 50.5 MB で安定するようにしました。
+13. **OCR が返す 1 桁区切りの数字列を検出できない** — 縦書きの実測で、Tesseract が
+    `0 9 0 1 2 3 4 5 6 7 8` のように数字を空白区切りで返すと、電話番号パターンの
+    繰り返し上限（16）で桁の途中までしか一致せず、検証を通らず未検出になりました。
+    上限を 24 に広げ、空白区切りの 11 桁も検出する回帰テストと評価文書を追加。
 
 ### 自分で確かめる
 
@@ -541,7 +553,7 @@ python -m ruff check .            # Lint
 python scripts/eval_detection.py  # 検出精度の再計測（種別ごとの再現率・適合率）
 python scripts/benchmark.py       # 遅延の再計測（--ner で NER 有効時）
 python scripts/e2e_live.py        # 実プロセスでの疎通確認
-python scripts/e2e_files.py       # PDF・画像の実通し確認（OCR は Windows のみ）
+python scripts/e2e_files.py       # PDF・画像の実通し確認（OCR はローカル実行）
 ```
 
 デスクトップアプリを組み立てる（Rust が必要）:
@@ -609,10 +621,14 @@ python desktop/scripts/build-installer.py                # インストーラま
   見た目には戻せません（戻せるのは `.masked.txt` のテキストだけです）
 - **スキャンの OCR 精度** — 傾き・かすれ・手書きは読み取りを外すことがあります。
   処理後は黒塗り結果を必ず目視確認してください
-- **縦書き（縦組み）は非対応** — Windows 標準 OCR は横書き専用です。
+- **縦書き（縦組み）は Windows 標準 OCR 単体では非対応** — 横書き専用のため、
   実測では縦組みの数字列が判読不能な文字列になり、**黒塗りされずに残ります**。
-  縦書きの文書は現状の `file mask` の対象外と考えてください（段組みは未検証）。
-  なお、OCR が 1 文字も読めなかったページは黙って素通しせず
+  Tesseract と `jpn` / `jpn_vert` 学習データを別途導入すると自動で Tesseract を
+  使い（Windows OCR が文字化けして個人情報が 1 件も取れない場合も再認識）、
+  縦書きもマスクできます。実行ファイルは `JP_PII_MASK_TESSERACT`（exe か
+  ディレクトリ）、学習データは `JP_PII_MASK_TESSDATA` でも指定できます。
+  Tesseract 未導入の環境では従来どおり対象外です（段組み・かすれ・手書きは
+  未検証）。なお、OCR が 1 文字も読めなかったページは黙って素通しせず
   警告を表示します（見逃しに気づけるようにするため）
 - **完全な保証ではない** — 「検出漏れゼロ」を保証するものではありません。
   機密性の高い用途では `redact_only` や送信前の目視確認を併用してください
@@ -637,6 +653,7 @@ python desktop/scripts/build-installer.py                # インストーラま
 | 精度向上（任意） | spaCy / GiNZA | MIT |
 | PDF・画像の処理（任意） | Pillow / pypdfium2 | MIT-CMU (HPND) / BSD-3-Clause・Apache-2.0 |
 | Windows OCR（任意） | winsdk | MIT |
+| 縦書き OCR（任意・別途導入） | Tesseract（jpn / jpn_vert） | Apache-2.0 |
 
 商用化に向けた検討事項（価格設計、配布、法務、ロードマップ）は
 [`docs/COMMERCIALIZATION.md`](docs/COMMERCIALIZATION.md) にまとめています。
@@ -653,7 +670,7 @@ python -m ruff check .                 # Lint
 python scripts/eval_detection.py       # 検出精度の計測（--check で下限チェック）
 python scripts/benchmark.py            # 遅延の計測（--ner / --json）
 python scripts/e2e_live.py             # 疎通確認
-python scripts/e2e_files.py            # PDF・画像の実通し確認（OCR は Windows のみ）
+python scripts/e2e_files.py            # PDF・画像の実通し確認（OCR はローカル実行）
 
 # アプリに内蔵するサーバーの単一バイナリ化（Tauri の探す場所に配置される）
 python desktop/scripts/build-sidecar.py
@@ -673,7 +690,7 @@ jp_pii_mask/
   vault.py        可逆対応表（暗号化保存・セッション分離・DPAPI 鍵保護）
   audit.py        監査ログ（JSONL。原文・検出値・ファイル名は記録しない）
   files.py        PDF・画像ファイルのマスク／復元（ローカルファイル向け）
-  ocr.py          Windows 標準 OCR のラッパー（任意依存）
+  ocr.py          Windows 標準 OCR / Tesseract のラッパー（任意依存）
   proxy.py        OpenAI / Anthropic 互換プロキシ
   config.py       設定
   webui.py        制御パネル（単一 HTML）
@@ -693,10 +710,10 @@ docs/             設計・ライセンス・商用化の検討資料
 - [x] 可逆マスキング（Vault・暗号化・セッション分離）
 - [x] OpenAI / Anthropic 互換プロキシ（ストリーミング対応）
 - [x] 制御パネル
-- [x] テスト（220 件）と実プロセス・実ファイル疎通確認
+- [x] テスト（221 件）と実プロセス・実ファイル疎通確認
 - [x] PDF・画像ファイルのローカルマスキング（Windows OCR 対応）
 - [x] 検出精度の評価コーパスと下限チェック（`eval/`、CI で自動計測）
-- [x] コーパス拡充と境界バグ修正（29 文書・107 ラベル。全角数字・帳票レイアウト対応）
+- [x] コーパス拡充と境界バグ修正（46 文書・173 ラベル。全角数字・帳票レイアウト対応）
 - [x] ファイル処理の鍵を分離（`file-key.bin` + Windows DPAPI 保護）
 - [x] 監査ログ（操作の記録。原文は含めない）
 - [x] Host ヘッダ検証（DNS リバインディング対策）
@@ -704,8 +721,8 @@ docs/             設計・ライセンス・商用化の検討資料
 - [x] デスクトップ GUI のビルド検証（Rust 環境でビルド・インストーラ生成）
 - [x] 遅延の実測ベンチマーク（`scripts/benchmark.py`。ルールベース約 50 万文字/秒）
 - [x] NER 有効時の検証（Python 3.12 + ja-ginza 5.3.0。長文の分割処理を含む）
-- [ ] 縦書き文書への対応（Windows OCR は縦書き非対応と実測済み。
-  別 OCR の併用か、行分割の自前実装が必要。段組みも未検証）
+- [x] 縦書き文書への対応（Tesseract の `jpn_vert` を任意バックエンドとして統合。
+  Windows OCR が読めない／化ける場合は自動で再認識。段組みは未検証）
 - [ ] 署名済みインストーラ（macOS notarization / Windows コード署名）
 - [ ] NER の既定同梱（現状は任意インストール `.[ner]`）
 - [ ] 評価コーパスの拡充（実文書から数百件規模へ）

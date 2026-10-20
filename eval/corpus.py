@@ -552,4 +552,306 @@ DOCUMENTS: tuple[Document, ...] = (
             Expected("EMAIL", "misaki.takahashi@example.co.jp"),
         ),
     ),
+    Document(
+        id="contract_parties",
+        title="業務委託契約書 (甲・乙の代表者と所在地)",
+        text=(
+            "業務委託契約書\n\n"
+            "甲: 株式会社サンプル商事\n"
+            "代表者: 田中太郎\n"
+            "所在地: 〒100-0001 東京都千代田区千代田1-1-1\n"
+            "連絡先: 03-1234-5678\n\n"
+            "乙: 株式会社テスト工業\n"
+            "代表者: 佐藤次郎\n"
+            "所在地: 〒150-0002 東京都渋谷区渋谷2-24-12\n"
+            "連絡先: 03-9876-5432\n"
+        ),
+        expected=(
+            Expected("ORGANIZATION", "株式会社サンプル商事"),
+            Expected("PERSON", "田中太郎"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒100-0001 東京都千代田区千代田1-1-1"
+            ),
+            Expected("PHONE", "03-1234-5678"),
+            Expected("ORGANIZATION", "株式会社テスト工業"),
+            Expected("PERSON", "佐藤次郎"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒150-0002 東京都渋谷区渋谷2-24-12"
+            ),
+            Expected("PHONE", "03-9876-5432"),
+        ),
+    ),
+    Document(
+        id="medical_record",
+        title="診療記録 (患者の生年月日・住所)",
+        text=(
+            "診療記録\n\n"
+            "患者氏名: 山田花子\n"
+            "生年月日: 昭和62年6月15日\n"
+            "住所: 〒150-0001 東京都渋谷区神宮前1-2-3\n"
+            "電話: 03-5555-7777\n"
+            "アレルギー: なし\n"
+        ),
+        expected=(
+            Expected("PERSON", "山田花子"),
+            Expected("DATE_OF_BIRTH", "昭和62年6月15日"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒150-0001 東京都渋谷区神宮前1-2-3"
+            ),
+            Expected("PHONE", "03-5555-7777"),
+        ),
+    ),
+    Document(
+        id="school_notice",
+        title="学校からのお知らせ (担任・連絡先)",
+        text=(
+            "保護者各位\n\n"
+            "運動会のお知らせ\n\n"
+            "担任: 小林美咲\n"
+            "連絡先: 045-333-4444\n"
+            "メール: misaki.kobayashi@example.ed.jp\n"
+            "雨天時は 070-8888-9999 までご連絡ください。\n"
+        ),
+        expected=(
+            Expected("PERSON", "小林美咲"),
+            Expected("PHONE", "045-333-4444"),
+            Expected("EMAIL", "misaki.kobayashi@example.ed.jp"),
+            Expected("PHONE", "070-8888-9999"),
+        ),
+    ),
+    Document(
+        id="hotel_booking",
+        title="宿泊予約控え (チェックイン日は生年月日ではない)",
+        text=(
+            "宿泊予約控え\n\n"
+            "ご宿泊者: 高橋三郎\n"
+            "チェックイン: 2026年10月20日\n"
+            "電話: 06-1234-5678\n"
+            "メール: saburo.takahashi@example.com\n"
+            "住所: 大阪府大阪市北区梅田1-1-1\n"
+        ),
+        expected=(
+            Expected("PERSON", "高橋三郎"),
+            Expected("PHONE", "06-1234-5678"),
+            Expected("EMAIL", "saburo.takahashi@example.com"),
+            Expected("ADDRESS", "大阪府大阪市北区梅田1-1-1"),
+        ),
+    ),
+    Document(
+        id="ec_order",
+        title="通販の注文確認 (注文番号は個人情報ではない)",
+        text=(
+            "ご注文内容\n\n"
+            "お届け先: 鈴木一郎\n"
+            "〒220-0012 神奈川県横浜市西区みなとみらい2-3-5\n"
+            "電話番号: 080-1111-2222\n"
+            "メール: ichiro.suzuki@example.jp\n"
+            "注文番号: 20261020-0001\n"
+        ),
+        expected=(
+            Expected("PERSON", "鈴木一郎"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒220-0012 神奈川県横浜市西区みなとみらい2-3-5"
+            ),
+            Expected("PHONE", "080-1111-2222"),
+            Expected("EMAIL", "ichiro.suzuki@example.jp"),
+        ),
+    ),
+    Document(
+        id="job_application",
+        title="履歴書 (氏名・生年月日・連絡先)",
+        text=(
+            "履歴書\n\n"
+            "氏名: 伊藤愛\n"
+            "生年月日: 2001/09/21\n"
+            "住所: 〒460-0001 愛知県名古屋市中区三の丸3-1-1\n"
+            "電話: 090-2222-3333\n"
+            "メール: ai.ito@example.com\n"
+        ),
+        expected=(
+            Expected("PERSON", "伊藤愛"),
+            Expected("DATE_OF_BIRTH", "2001/09/21"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒460-0001 愛知県名古屋市中区三の丸3-1-1"
+            ),
+            Expected("PHONE", "090-2222-3333"),
+            Expected("EMAIL", "ai.ito@example.com"),
+        ),
+    ),
+    Document(
+        id="payroll_csv",
+        title="給与CSV (カンマ区切りの氏名・連絡先・口座)",
+        text=(
+            "社員番号,氏名,メール,電話,口座\n"
+            "1001,中村由美,yumi.nakamura@example.co.jp,090-3333-4444,普通 1234567\n"
+            "1002,山本健太,kenta.yamamoto@example.com,070-5555-6666,当座 7654321\n"
+        ),
+        expected=(
+            Expected("PERSON", "中村由美"),
+            Expected("EMAIL", "yumi.nakamura@example.co.jp"),
+            Expected("PHONE", "090-3333-4444"),
+            Expected("BANK_ACCOUNT", "普通 1234567"),
+            Expected("PERSON", "山本健太"),
+            Expected("EMAIL", "kenta.yamamoto@example.com"),
+            Expected("PHONE", "070-5555-6666"),
+            Expected("BANK_ACCOUNT", "当座 7654321"),
+        ),
+    ),
+    Document(
+        id="access_log",
+        title="アクセスログ (IP・日時・担当者)",
+        text=(
+            "2026-10-20 09:12:01 GET /api/users 200 133.242.10.5\n"
+            "2026-10-20 09:12:05 POST /api/login 401 203.0.113.9\n"
+            "2026-10-20 09:12:10 GET /api/health 200 10.0.0.12\n"
+            "担当: 中村由美 (yumi.nakamura@example.co.jp)\n"
+        ),
+        expected=(
+            Expected("IP_ADDRESS", "133.242.10.5"),
+            Expected("IP_ADDRESS", "203.0.113.9"),
+            Expected("IP_ADDRESS", "10.0.0.12"),
+            Expected("PERSON", "中村由美"),
+            Expected("EMAIL", "yumi.nakamura@example.co.jp"),
+        ),
+    ),
+    Document(
+        id="business_card",
+        title="名刺のテキスト (会社・氏名・住所)",
+        text=(
+            "株式会社サンプル商事\n"
+            "営業部 課長\n"
+            "田中太郎\n"
+            "携帯: 090-1234-5678\n"
+            "メール: taro.tanaka@example.co.jp\n"
+            "〒100-0001 東京都千代田区千代田1-1-1\n"
+        ),
+        expected=(
+            Expected("ORGANIZATION", "株式会社サンプル商事"),
+            Expected("PERSON", "田中太郎"),
+            Expected("PHONE", "090-1234-5678"),
+            Expected("EMAIL", "taro.tanaka@example.co.jp"),
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒100-0001 東京都千代田区千代田1-1-1"
+            ),
+        ),
+    ),
+    Document(
+        id="invoice_numbers_negative",
+        title="帳票番号だけのメモ (個人情報なし)",
+        text=(
+            "請求書番号: INV-2026-0042\n"
+            "注文番号: 20261020-0001\n"
+            "顧客コード: 1234567890123\n"
+            "納品書: 9876543210985\n"
+        ),
+        expected=(),
+    ),
+    Document(
+        id="seating_negative",
+        title="会議室予約表 (時刻・定員・内線)",
+        text=(
+            "会議室予約表\n\n"
+            "10:00-11:00 会議室A (定員 12名)\n"
+            "13:30-15:00 会議室B (定員 8名)\n"
+            "内線: 1234\n"
+            "資料番号: 20261020-01\n"
+        ),
+        expected=(),
+    ),
+    Document(
+        id="ocr_fax",
+        title="FAX 送付状 (OCR の長音揺れ)",
+        text=(
+            "FAX 送付状\n\n"
+            "宛先: 株式会社テスト工業 御中\n"
+            "送信者: 渡辺咲子\n"
+            "TEL 03ー1111ー2222\n"
+            "FAX 03ー1111ー2223\n"
+            "Mail sakiko.watanabe@example.co.jp\n"
+        ),
+        expected=(
+            Expected("ORGANIZATION", "株式会社テスト工業"),
+            Expected("PERSON", "渡辺咲子"),
+            Expected("PHONE", "03ー1111ー2222"),
+            Expected("PHONE", "03ー1111ー2223"),
+            Expected("EMAIL", "sakiko.watanabe@example.co.jp"),
+        ),
+    ),
+    Document(
+        id="chat_support",
+        title="サポートチャット (注文番号と連絡先)",
+        text=(
+            "顧客: 注文番号 20261020-0001 の件で連絡しました\n"
+            "担当: お名前をお願いします\n"
+            "顧客: 加藤大輔です\n"
+            "担当: ご登録のメール daisuke.kato@example.com にご案内します\n"
+        ),
+        expected=(
+            Expected("PERSON", "加藤大輔"),
+            Expected("EMAIL", "daisuke.kato@example.com"),
+        ),
+    ),
+    Document(
+        id="address_variants",
+        title="配送先候補 (北海道・京都・沖縄)",
+        text=(
+            "配送先候補\n\n"
+            "〒060-0001 北海道札幌市中央区北1条西2-3\n"
+            "京都府京都市中京区河原町通3-4\n"
+            "沖縄県那覇市久茂地1-1-1\n"
+        ),
+        expected=(
+            Expected(
+                "POSTAL_ADDRESS_FULL", "〒060-0001 北海道札幌市中央区北1条西2-3"
+            ),
+            Expected("ADDRESS", "京都府京都市中京区河原町通3-4"),
+            Expected("ADDRESS", "沖縄県那覇市久茂地1-1-1"),
+        ),
+    ),
+    Document(
+        id="dob_forms",
+        title="本人確認票 (令和元年・カナ氏名)",
+        text=(
+            "本人確認票\n\n"
+            "氏名: 佐藤花子\n"
+            "生年月日: 令和元年5月1日\n"
+            "別名: 佐藤ハナコ\n"
+            "電話: 080-4444-5555\n"
+        ),
+        expected=(
+            Expected("PERSON", "佐藤花子"),
+            Expected("DATE_OF_BIRTH", "令和元年5月1日"),
+            Expected("PERSON", "佐藤ハナコ"),
+            Expected("PHONE", "080-4444-5555"),
+        ),
+    ),
+    Document(
+        id="mixed_english",
+        title="英語混在の議事録 (英語名は対象外)",
+        text=(
+            "Meeting notes\n\n"
+            "Attendees: John Smith, 田中太郎\n"
+            "Email: taro.tanaka@example.co.jp\n"
+            "Phone: 03-1234-5678\n"
+            "Next meeting: 2026-11-10\n"
+        ),
+        expected=(
+            Expected("PERSON", "田中太郎"),
+            Expected("EMAIL", "taro.tanaka@example.co.jp"),
+            Expected("PHONE", "03-1234-5678"),
+        ),
+    ),
+    Document(
+        id="ocr_spaced_phone",
+        title="OCR 読み取り結果 (数字の間に空白)",
+        text=(
+            "スキャン結果\n\n"
+            "電話番号: 0 9 0 1 2 3 4 5 6 7 8\n"
+            "担当: 山本健太\n"
+        ),
+        expected=(
+            Expected("PHONE", "0 9 0 1 2 3 4 5 6 7 8"),
+            Expected("PERSON", "山本健太"),
+        ),
+    ),
 )
