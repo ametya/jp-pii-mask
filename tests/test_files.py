@@ -183,7 +183,8 @@ def _make_vault(tmp_path: Path, name: str = "out") -> Vault:
 
 
 requires_ocr = pytest.mark.skipif(
-    not ocr_available(), reason="Windows 標準 OCR (winsdk) が使えない環境"
+    not ocr_available(),
+    reason="日本語 OCR (winsdk + 日本語の言語パック) が使えない環境",
 )
 
 

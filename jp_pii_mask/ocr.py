@@ -67,8 +67,9 @@ __all__ = [
 # OCR エンジンに渡す画像の最大辺 (px)。これを超える場合は縮小する。
 MAX_OCR_DIMENSION = 6000
 
-# 優先する認識言語。日本語の言語パックが無い場合は
-# ユーザーのプロファイル言語へフォールバックする。
+# 認識言語。日本語の言語パックが無い場合は OCR 不可として扱う。
+# 英語エンジンへのフォールバックはしない (日本語文書を誤読したまま
+# 「OCR 成功」になり、黒塗り漏れを招くため)。
 PREFERRED_TAGS: tuple[str, ...] = ("ja", "ja-JP")
 
 OCR_MISSING_HINT = (
@@ -134,7 +135,12 @@ def _import_winsdk() -> Any:
 
 
 def _create_engine(mod: dict[str, Any]) -> Any:
-    """日本語優先で OCR エンジンを作る。無ければ None。"""
+    """日本語 OCR エンジンを作る。無ければ None。
+
+    日本語の言語パックが無い環境でユーザーのプロファイル言語
+    (英語など) にフォールバックすると、日本語文書を誤読したまま
+    「OCR 成功」になる。日本語専用ツールのため厳密に日本語を要求する。
+    """
     engine_cls = mod["OcrEngine"]
     language_cls = mod["Language"]
     for tag in PREFERRED_TAGS:
@@ -142,8 +148,6 @@ def _create_engine(mod: dict[str, Any]) -> Any:
             engine = engine_cls.try_create_from_language(language_cls(tag))
             if engine is not None:
                 return engine
-    with contextlib.suppress(Exception):
-        return engine_cls.try_create_from_user_profile_languages()
     return None
 
 

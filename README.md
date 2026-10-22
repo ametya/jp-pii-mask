@@ -153,6 +153,7 @@ jp-pii-mask demo
 ```bash
 python -m pip install -e ".[file]"          # PDF・画像対応 (Pillow + pypdfium2)
 python -m pip install -e ".[ocr-win]"       # スキャン PDF・写真の文字認識 (Windows のみ)
+# 日本語の OCR 言語パックが必要 (設定 > 時刻と言語 > 言語と地域 > 日本語のオプション)
 
 jp-pii-mask file mask 請求書.pdf
 ```
