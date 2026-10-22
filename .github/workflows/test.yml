@@ -24,6 +24,10 @@ jobs:
   test:
     name: テスト (Windows)
     runs-on: windows-latest
+    # 英語版 Windows のコンソール (cp1252) でも日本語の出力で
+    # UnicodeEncodeError にならないようにする。
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - name: ソースを取得
         uses: actions/checkout@v4
